@@ -1,11 +1,11 @@
-use crate::app::{App, History, Tab};
+use crate::app::{App, History, Mode, SortKey, Tab};
 use crate::format::{bar_string, bytes, percent, rate};
 use crate::gpu::{gpu_util_string, vram_string};
 use ratatui::{
     layout::{Alignment, Constraint, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Paragraph, Sparkline, Tabs},
+    widgets::{Block, Borders, Cell, Paragraph, Row, Sparkline, Table, TableState, Tabs},
 };
 
 /// パネルの枠とタイトルをアクセント色で作る。
@@ -151,6 +151,75 @@ fn performance_tab(f: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
     );
 }
 
+fn sort_label(key: SortKey) -> &'static str {
+    match key {
+        SortKey::Name => "name",
+        SortKey::Pid => "pid",
+        SortKey::Cpu => "cpu",
+        SortKey::Memory => "mem",
+        SortKey::Disk => "disk",
+    }
+}
+
+/// フッタ行の文言。パフォーマンスタブでは何も出さない（操作はヘッダに書いてある）。
+fn footer_text(app: &App) -> String {
+    if app.tab != Tab::Processes {
+        return String::new();
+    }
+    let base = match app.mode {
+        Mode::Filter => format!("Filter: {}_   (Enter/Esc: close)", app.filter),
+        Mode::ConfirmKill => "kill? (y/n)".to_string(), // Task 5 で実装
+        Mode::Normal => {
+            let filter = if app.filter.is_empty() { "(none)".to_string() } else { app.filter.clone() };
+            let order = if app.desc { "desc" } else { "asc" };
+            format!(
+                "Filter: {filter}   (/)    x kill    s sort {}{order}    r reverse    Tab switch    q quit",
+                sort_label(app.sort)
+            )
+        }
+    };
+    match &app.status {
+        Some(status) => format!("{base}    {status}"),
+        None => base,
+    }
+}
+
+/// プロセス一覧。選択行は `app.selected` から毎フレーム作り直す（範囲外に出ないよう追従する）。
+fn processes_tab(f: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
+    let rows = app.visible();
+    let widths = [
+        Constraint::Min(20),
+        Constraint::Length(7),
+        Constraint::Length(7),
+        Constraint::Length(10),
+        Constraint::Length(11),
+        Constraint::Length(11),
+    ];
+    let body = rows.iter().map(|p| {
+        Row::new(vec![
+            Cell::from(p.name.clone()),
+            Cell::from(p.pid.to_string()),
+            Cell::from(percent(p.cpu)),
+            Cell::from(bytes(p.memory)),
+            Cell::from(rate(p.disk_read_bps)),
+            Cell::from(rate(p.disk_write_bps)),
+        ])
+    });
+    let header = Row::new(vec!["Name", "PID", "CPU%", "MEM", "DISK R", "DISK W"])
+        .style(Style::default().fg(Color::LightBlue).add_modifier(Modifier::BOLD));
+    let table = Table::new(body, widths)
+        .header(header)
+        .column_spacing(1)
+        .block(panel_block("Processes", Color::LightBlue))
+        .row_highlight_style(Style::default().bg(Color::DarkGray));
+
+    let mut state = TableState::default();
+    if !rows.is_empty() {
+        state.select(Some(app.selected.min(rows.len() - 1)));
+    }
+    f.render_stateful_widget(table, area, &mut state);
+}
+
 pub fn draw(f: &mut ratatui::Frame<'_>, app: &App) {
     let chunks = Layout::vertical([
         Constraint::Length(1),
@@ -175,12 +244,15 @@ pub fn draw(f: &mut ratatui::Frame<'_>, app: &App) {
 
     match app.tab {
         Tab::Performance => performance_tab(f, chunks[1], app),
-        // Task 4 で processes_tab に差し替える
-        Tab::Processes => performance_tab(f, chunks[1], app),
+        Tab::Processes => processes_tab(f, chunks[1], app),
     }
 
-    // 最下行は Task 4 でキーガイド / フィルタ / kill 確認に差し替える
-    f.render_widget(Paragraph::new(""), chunks[2]);
+    let style = if app.status.is_some() {
+        Style::default().fg(Color::LightYellow)
+    } else {
+        Style::default().fg(Color::DarkGray)
+    };
+    f.render_widget(Paragraph::new(footer_text(app)).style(style), chunks[2]);
 }
 
 /// TestBackend に 1 フレーム描画し、各行末尾の空白を trim した文字列を返す。行数は必ず `height`。
@@ -208,7 +280,7 @@ pub fn snapshot(app: &App, width: u16, height: u16) -> String {
 mod tests {
     use super::*;
     use crate::app::App;
-    use crate::metrics::Metrics;
+    use crate::metrics::{Metrics, ProcessRow};
     use ratatui::backend::TestBackend;
 
     fn sample_gpu() -> crate::gpu::GpuStats {
@@ -238,6 +310,23 @@ mod tests {
             net_tx_bps: 2048,
             gpu: Some(sample_gpu()),
             processes: Vec::new(),
+        });
+        app
+    }
+
+    fn app_with_processes(names: &[(&str, u32, f32)]) -> App {
+        let mut app = App::new();
+        app.on_tick(Metrics {
+            processes: names
+                .iter()
+                .map(|(name, pid, cpu)| ProcessRow {
+                    pid: *pid,
+                    name: name.to_string(),
+                    cpu: *cpu,
+                    ..Default::default()
+                })
+                .collect(),
+            ..Default::default()
         });
         app
     }
@@ -296,5 +385,31 @@ mod tests {
         ] {
             assert_eq!(buffer[(0, y)].style().fg, Some(expected), "panel at y={y}");
         }
+    }
+
+    #[test]
+    fn processes_tab_lists_sorted_rows_with_headers() {
+        let mut app = app_with_processes(&[("alpha.exe", 111, 5.0), ("beta.exe", 222, 50.0)]);
+        app.tab = Tab::Processes;
+        let shot = snapshot(&app, 120, 30);
+        for label in ["Name", "PID", "CPU%", "MEM", "DISK R", "DISK W", "alpha.exe", "beta.exe"] {
+            assert!(shot.contains(label), "snapshot missing {label}:\n{shot}");
+        }
+        let (beta, alpha) = (shot.find("beta.exe").unwrap(), shot.find("alpha.exe").unwrap());
+        assert!(beta < alpha, "CPU 降順なので beta.exe が先に来るべき:\n{shot}");
+    }
+
+    #[test]
+    fn non_ascii_process_name_does_not_panic() {
+        let mut app = app_with_processes(&[("日本語プロセス名.exe", 333, 1.0), ("絵文字🎮.exe", 444, 2.0)]);
+        app.tab = Tab::Processes;
+        let _ = snapshot(&app, 40, 20);
+    }
+
+    #[test]
+    fn processes_snapshot_at_tiny_size_does_not_panic() {
+        let mut app = app_with_processes(&[("a", 1, 1.0)]);
+        app.tab = Tab::Processes;
+        let _ = snapshot(&app, 20, 5);
     }
 }

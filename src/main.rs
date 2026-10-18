@@ -55,7 +55,12 @@ fn pump_keys(app: &mut app::App, budget: Duration) -> io::Result<bool> {
         if event::poll(remaining.min(Duration::from_millis(50)))?
             && let Event::Key(key) = event::read()?
         {
-            app.on_key(key);
+            // `Action::Quit` は App 側が `should_quit` を立てるのでここでは何もしない。
+            // `Action::Kill` は Task 5 で実装する。
+            match app.on_key(key) {
+                app::Action::None | app::Action::Quit => {}
+                app::Action::Kill(_pid) => {}
+            }
         }
     }
 }
