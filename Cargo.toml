@@ -2,6 +2,9 @@
 name = "tui-gpumonitor"
 version = "0.1.0"
 edition = "2024"
+description = "Terminal system monitor for Windows: Task Manager-style performance charts and a process list with guarded kill"
+license = "MIT"
+repository = "https://github.com/teamkller1200/tui-gpumonitor"
 
 [dependencies]
 crossterm = "0.28"
