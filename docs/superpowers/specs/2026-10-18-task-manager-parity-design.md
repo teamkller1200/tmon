@@ -41,9 +41,9 @@
 | ファイル | 責務 | 主要な公開 API |
 |---|---|---|
 | `src/main.rs` | 端末初期化と復元の RAII ガード、イベントループ、1 秒 tick、キー入力の配送 | `TerminalGuard`, `fn main()` |
-| `src/gpu.rs` | GPU 計測（既存コードの移設）。nvidia-smi 実行 | `GpuStats`, `read_gpu_stats() -> Option<GpuStats>`, `power_percent() -> u32`, `gpu_util_string() -> String`, `vram_string(u32, u32) -> String` |
+| `src/gpu.rs` | GPU 計測（既存コードの移設）。nvidia-smi 実行 | `GpuStats`, `read_gpu_stats() -> Option<GpuStats>` |
 | `src/metrics.rs` | sysinfo の所有とサンプリング。全体/プロセスの計測値 | `Sampler`, `Metrics`, `ProcessRow`, `KillOutcome`, `rate_per_sec()`, `is_loopback_name()`, `kill_blocked_reason()` |
-| `src/app.rs` | UI 状態、履歴リングバッファ、ソート/フィルタ、キー→アクション変換 | `App`, `Tab`, `SortKey`, `Mode`, `StatusKind`, `Action`, `History`, `HISTORY_LEN`, `filter_matches()`, `sort_rows()` |
+| `src/app.rs` | UI 状態、履歴リングバッファ、ソート/フィルタ、キー→アクション変換 | `App`, `Tab`, `SortKey`, `Mode`, `StatusKind`, `History`, `HISTORY_LEN`, `filter_matches()`, `sort_rows()` |
 | `src/format.rs` | 表示用フォーマット（純関数） | `bar_string()`, `bytes()`, `rate()`, `percent()` |
 | `src/ui.rs` | 描画。加えて行クリックの当たり判定用に、テーブルを描いた矩形とスクロール量を `App` へ控える | `draw(&mut Frame, &mut App)`。内部ヘルパー `panel_block` / `spark` / `metric_panel` / `performance_tab` / `processes_tab` / `graph_panel` / `trend_row` / `modal` は非公開。テスト専用の `snapshot(&App, u16, u16) -> String` は `#[cfg(test)]`（渡された `App` を複製して描く） |
 
@@ -62,7 +62,7 @@ loop {
     terminal.draw(|f| ui::draw(f, &mut app))?;
     // 次のサンプリング時刻まで待ち、キーまたはマウスを 1 つだけ処理する。
     // 1 イベントごとにループ先頭へ戻るので、確認プロンプトは必ず描かれてから y が効く。
-    // → Action::None | Quit | Kill(pid, start_secs)
+    // → Some((pid, start_secs)) なら kill 要求（それ以外は None）
     if let Some((pid, start)) = pump_keys(&mut app, next_sample - now)? {
         app.set_kill_result(pid, sampler.kill(pid, start));
     }
@@ -370,7 +370,7 @@ kill 確認中（`x` 押下後。画面中央のモーダル、枠は `Color::Ye
 
 | キー | 動作 |
 |---|---|
-| `y` / `Y` | kill を実行（`Action::Kill(pid, start_secs)`）、結果をステータスに表示 |
+| `y` / `Y` | kill を実行（`on_key` が `Some((pid, start_secs))` を返す）、結果をステータスに表示 |
 | その他（`n` / `Esc` 含む） | 中止して Normal に戻る |
 
 確認ダイアログ（中央、§6.4）: 1 行目に `PID 1234 (chrome.exe)`、2 行目に `[y] kill    [n] cancel`。

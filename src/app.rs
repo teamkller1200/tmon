@@ -78,15 +78,6 @@ pub enum StatusKind {
     Err,
 }
 
-/// `on_key` が返す、UI 層に任せる操作。
-#[derive(Debug, PartialEq)]
-pub enum Action {
-    None,
-    Quit,
-    /// (PID, 確認プロンプトを出した時点のプロセス開始時刻)
-    Kill(u32, u64),
-}
-
 /// プロセス名の部分一致、または PID の前方一致（空フィルタは全件一致）。
 pub fn filter_matches(name: &str, pid: u32, filter: &str) -> bool {
     let needle = filter.trim().to_ascii_lowercase();
@@ -121,7 +112,7 @@ pub enum Tab {
 
 impl Tab {
     /// タブの並び（ui はこの順に描き、ヘッダのクリック位置もこの順で引く）。
-    pub const ALL: [Tab; 2] = [Tab::Performance, Tab::Processes];
+    const ALL: [Tab; 2] = [Tab::Performance, Tab::Processes];
 
     /// ui が描くタブ見出し。
     pub fn titles() -> [&'static str; 2] {
@@ -154,7 +145,6 @@ pub struct App {
     pub hist_disk: History,
     pub hist_net: History,
     pub hist_gpu: History,
-    pub frame_count: u64,
     pub should_quit: bool,
     pub sort: SortKey,
     pub desc: bool,
@@ -182,7 +172,6 @@ impl Default for App {
             hist_disk: History::new(),
             hist_net: History::new(),
             hist_gpu: History::new(),
-            frame_count: 0,
             should_quit: false,
             // 起動時はタスクマネージャーと同じ CPU 降順。
             sort: SortKey::Cpu,
@@ -219,15 +208,15 @@ impl App {
         self.hist_net.push((metrics.net_rx_bps + metrics.net_tx_bps) / 1024);
         self.hist_gpu.push(metrics.gpu.as_ref().map_or(0, |g| g.gpu_util) as u64);
         self.metrics = metrics;
-        self.frame_count += 1;
         // プロセスが消えると選択行が範囲外になるので寄せる。
         self.clamp_selection();
     }
 
-    /// 押下キーを状態に反映し、UI 層に渡す操作を返す。KeyEventKind::Press 以外は無視する。
-    pub fn on_key(&mut self, key: KeyEvent) -> Action {
+    /// 押下キーを状態に反映する。`y` で確定した kill は (PID, 確認時の開始時刻) を返す。
+    /// KeyEventKind::Press 以外は無視する。
+    pub fn on_key(&mut self, key: KeyEvent) -> Option<(u32, u64)> {
         if key.kind != KeyEventKind::Press {
-            return Action::None;
+            return None;
         }
         match self.mode {
             Mode::Filter => {
@@ -241,7 +230,7 @@ impl App {
                 }
                 // 絞り込みで行が減っても、選択行が表示とずれたまま残らないようその場で寄せる。
                 self.clamp_selection();
-                Action::None
+                None
             }
             Mode::ConfirmKill => {
                 // y 以外（q を含む）はすべてキャンセル扱い。
@@ -250,58 +239,58 @@ impl App {
                 self.leave_modal();
                 match (key.code, pid, start) {
                     (KeyCode::Char('y') | KeyCode::Char('Y'), Some(pid), Some(start)) => {
-                        Action::Kill(pid, start)
+                        Some((pid, start))
                     }
-                    _ => Action::None,
+                    _ => None,
                 }
             }
             Mode::Normal => match key.code {
                 KeyCode::Char('q') => {
                     self.should_quit = true;
-                    Action::Quit
+                    None
                 }
                 KeyCode::Tab | KeyCode::Right | KeyCode::Char('l') => {
                     self.cycle_tab();
-                    Action::None
+                    None
                 }
                 KeyCode::Left | KeyCode::Char('h') => {
                     self.cycle_tab();
-                    Action::None
+                    None
                 }
                 KeyCode::Char('j') | KeyCode::Down => {
                     self.move_selection(1);
-                    Action::None
+                    None
                 }
                 KeyCode::Char('k') | KeyCode::Up => {
                     self.move_selection(-1);
-                    Action::None
+                    None
                 }
                 KeyCode::PageDown => {
                     self.move_selection(10);
-                    Action::None
+                    None
                 }
                 KeyCode::PageUp => {
                     self.move_selection(-10);
-                    Action::None
+                    None
                 }
                 KeyCode::Char('s') => {
                     self.sort = self.sort.next();
                     self.desc = true;
-                    Action::None
+                    None
                 }
                 KeyCode::Char('r') => {
                     self.desc = !self.desc;
-                    Action::None
+                    None
                 }
                 KeyCode::Char('/') => {
                     self.mode = Mode::Filter;
-                    Action::None
+                    None
                 }
                 KeyCode::Char('x') => {
                     self.request_kill(own_pid());
-                    Action::None
+                    None
                 }
-                _ => Action::None,
+                _ => None,
             },
         }
     }
@@ -309,7 +298,7 @@ impl App {
     /// マウス 1 イベントを状態に反映する。ヘッダ行の見出しクリックでタブを切り替え、
     /// ホイールでプロセス選択を動かす。選択ごと動かすのは、見えていない行に `x` が効くのを
     /// 防ぐため（Table は選択行が見える位置まで自分でスクロールする）。
-    pub fn on_mouse(&mut self, mouse: MouseEvent) -> Action {
+    pub fn on_mouse(&mut self, mouse: MouseEvent) {
         match mouse.kind {
             MouseEventKind::Down(MouseButton::Left) if mouse.row == 0 => {
                 // 確認プロンプトやフィルタ入力は Processes タブのフッタにしか出ないので、
@@ -335,7 +324,6 @@ impl App {
             }
             _ => {}
         }
-        Action::None
     }
 
     /// 画面座標からプロセス表の行番号を引く。`rows_area` / `rows_offset` は ui が描画時に書く。
@@ -458,7 +446,6 @@ mod tests {
         assert_eq!(app.metrics.cpu_total, 12.5);
         assert_eq!(app.hist_cpu.latest(), 13); // 12.5 -> round して u64
         assert_eq!(app.hist_mem.latest(), 50); // 使用率%
-        assert_eq!(app.frame_count, 1);
     }
 
     fn row(pid: u32, name: &str, cpu: f32) -> ProcessRow {
@@ -542,7 +529,7 @@ mod tests {
     #[test]
     fn filter_mode_edits_filter_and_esc_returns_to_normal() {
         let mut app = app_with_processes(&[("a", 1, 1.0)]);
-        assert_eq!(app.on_key(key(KeyCode::Char('/'))), Action::None);
+        assert_eq!(app.on_key(key(KeyCode::Char('/'))), None);
         assert_eq!(app.mode, Mode::Filter);
         app.on_key(key(KeyCode::Char('a')));
         assert_eq!(app.filter, "a");
@@ -570,11 +557,11 @@ mod tests {
         app.request_kill(Some(999));
         assert_eq!(app.pending_kill, Some(1234));
         assert_eq!(app.mode, Mode::ConfirmKill);
-        assert_eq!(app.on_key(key(KeyCode::Char('n'))), Action::None);
+        assert_eq!(app.on_key(key(KeyCode::Char('n'))), None);
         assert_eq!(app.pending_kill, None);
         assert_eq!(app.mode, Mode::Normal);
         app.request_kill(Some(999));
-        assert_eq!(app.on_key(key(KeyCode::Char('y'))), Action::Kill(1234, 0));
+        assert_eq!(app.on_key(key(KeyCode::Char('y'))), Some((1234, 0)));
         assert_eq!(app.mode, Mode::Normal);
         assert_eq!(app.pending_kill, None);
     }
@@ -584,7 +571,7 @@ mod tests {
         let mut app = app_with_processes(&[("notepad.exe", 1234, 1.0)]);
         app.tab = Tab::Processes;
         app.request_kill(Some(999));
-        assert_eq!(app.on_key(key(KeyCode::Char('q'))), Action::None);
+        assert_eq!(app.on_key(key(KeyCode::Char('q'))), None);
         assert!(!app.should_quit);
     }
 
@@ -635,7 +622,7 @@ mod tests {
         assert_eq!(app.selected, 1);
         app.on_key(key(KeyCode::Down));
         assert_eq!(app.selected, 1); // 末端で止まる
-        assert_eq!(app.on_key(key(KeyCode::Char('q'))), Action::Quit);
+        assert_eq!(app.on_key(key(KeyCode::Char('q'))), None);
         assert!(app.should_quit);
     }
 

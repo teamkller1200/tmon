@@ -45,13 +45,3 @@ pub fn read_gpu_stats() -> Option<GpuStats> {
     })
 }
 
-pub fn gpu_util_string(util: u32) -> String {
-    format!("{}%", util)
-}
-
-pub fn vram_string(used_mb: u32, total_mb: u32) -> String {
-    let used_gb = (used_mb as f64 / 1024.0).max(1.0).round() as u32;
-    let total_gb = (total_mb as f64 / 1024.0).max(1.0).round() as u32;
-    format!("{}/{}GB", used_gb, total_gb)
-}
-

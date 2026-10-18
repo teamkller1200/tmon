@@ -1,6 +1,5 @@
 use crate::app::{App, History, HISTORY_LEN, Mode, SortKey, StatusKind, Tab};
 use crate::format::{bar_string, bytes, percent, rate};
-use crate::gpu::{gpu_util_string, vram_string};
 use ratatui::{
     layout::{Alignment, Constraint, Layout, Rect},
     style::{Color, Modifier, Style},
@@ -38,9 +37,10 @@ fn metric_panel(
     text: Line<'_>,
     sparkline: Sparkline<'_>,
 ) {
-    f.render_widget(panel_block(title, color), area);
-    let rows = Layout::vertical([Constraint::Length(1), Constraint::Length(1)])
-        .split(panel_block(title, color).inner(area));
+    let block = panel_block(title, color);
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+    let rows = Layout::vertical([Constraint::Length(1), Constraint::Length(1)]).split(inner);
     f.render_widget(Paragraph::new(text).style(Style::default().fg(color)), rows[0]);
     f.render_widget(sparkline.style(Style::default().fg(color)), rows[1]);
 }
@@ -52,8 +52,8 @@ const TREND_H: u16 = 6;
 /// 履歴は 1 秒 tick なので、横軸は右端が現在。
 fn graph_panel(f: &mut ratatui::Frame<'_>, area: Rect, title: &str, color: Color, history: &History) {
     let block = panel_block(title, color);
-    // Chart は下から「x 目盛 1 行 + 軸 1 行 + グラフ」を積むので、これ未満では目盛が入らない。
-    if block.inner(area).height < 3 || block.inner(area).width < 12 {
+    // 幅が狭いと目盛のラベルが潰れるので、そのときは枠だけ描く（高さは呼び出し元が TREND_H で担保）。
+    if block.inner(area).width < 12 {
         f.render_widget(block, area);
         return;
     }
@@ -164,10 +164,11 @@ fn performance_tab(f: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
             "GPU",
             Color::LightYellow,
             Line::from(format!(
-                "{}   {}   VRAM {}   TEMP {}C   PWR {} / {}W   FAN {}%",
-                gpu_util_string(g.gpu_util),
+                "{}%   {}   VRAM {} / {}   TEMP {}C   PWR {} / {}W   FAN {}%",
+                g.gpu_util,
                 bar_string(g.gpu_util, 28),
-                vram_string(g.memory_used_mb, g.memory_total_mb),
+                bytes(g.memory_used_mb as u64 * 1024 * 1024),
+                bytes(g.memory_total_mb as u64 * 1024 * 1024),
                 g.temperature_c,
                 g.power_w.round() as u32,
                 g.power_limit_w.round() as u32,
@@ -253,10 +254,11 @@ fn modal(
     body: [String; 2],
 ) {
     let rect = centered(screen, 56, 4);
+    let block = panel_block(title, color);
+    let inner = block.inner(rect);
     f.render_widget(Clear, rect);
-    f.render_widget(panel_block(title, color), rect);
-    let rows = Layout::vertical([Constraint::Length(1), Constraint::Length(1)])
-        .split(panel_block(title, color).inner(rect));
+    f.render_widget(block, rect);
+    let rows = Layout::vertical([Constraint::Length(1), Constraint::Length(1)]).split(inner);
     let [first, second] = body;
     f.render_widget(Paragraph::new(first).style(Style::default().fg(Color::White)), rows[0]);
     f.render_widget(Paragraph::new(second).style(Style::default().fg(Color::Gray)), rows[1]);
@@ -295,11 +297,7 @@ const DISK_W: u16 = 11;
 
 /// 桁を揃えるため右寄せにする（幅より長い文字列はそのまま出す）。
 fn right(width: u16, text: &str) -> String {
-    let width = width as usize;
-    if text.chars().count() >= width {
-        return text.to_string();
-    }
-    format!("{}{text}", " ".repeat(width - text.chars().count()))
+    format!("{:>width$}", text, width = width as usize)
 }
 
 /// プロセス一覧。選択行は `app.selected` から毎フレーム作り直す（範囲外に出ないよう追従する）。

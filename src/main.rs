@@ -45,9 +45,6 @@ impl TerminalGuard {
         let _ = io::stdout().execute(LeaveAlternateScreen);
     }
 
-    fn terminal(&mut self) -> &mut Terminal<CrosstermBackend<Stdout>> {
-        &mut self.terminal
-    }
 }
 
 impl Drop for TerminalGuard {
@@ -83,13 +80,12 @@ fn pump_keys(app: &mut app::App, budget: Duration) -> io::Result<Option<(u32, u6
         if !actionable {
             continue;
         }
-        let action = match event {
-            Event::Key(key) => app.on_key(key),
-            Event::Mouse(mouse) => app.on_mouse(mouse),
-            _ => app::Action::None,
-        };
-        return match action {
-            app::Action::Kill(pid, start) => Ok(Some((pid, start))),
+        return match event {
+            Event::Key(key) => Ok(app.on_key(key)),
+            Event::Mouse(mouse) => {
+                app.on_mouse(mouse);
+                Ok(None)
+            }
             _ => Ok(None),
         };
     }
@@ -113,7 +109,7 @@ fn main() -> io::Result<()> {
             next_sample = now + tick;
         }
 
-        guard.terminal().draw(|f| ui::draw(f, &mut app))?;
+        guard.terminal.draw(|f| ui::draw(f, &mut app))?;
 
         // 次の tick まで入力待ち。1 キー処理ごとにループ先頭へ戻って必ず再描画する。
         let wait = next_sample.saturating_duration_since(now).max(Duration::from_millis(10));
