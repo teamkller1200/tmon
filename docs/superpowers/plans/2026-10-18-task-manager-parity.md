@@ -970,11 +970,41 @@ git add -A && git commit -m "feat: add guarded process kill with confirmation"
 
 検証（2026-10-18）: `cargo test` **46 passed**、`cargo clippy --all-targets -- -D warnings` 警告なし。追加テスト: `kill_targets_the_row_highlighted_by_scrolling` / `kill_confirm_modal_is_centered_on_screen` / `filter_modal_shows_the_live_input` / `processes_tab_shows_trends_in_the_leftover_space` / `trends_are_omitted_when_there_is_no_room` / `performance_tab_shows_trends_below_the_cores` / `numeric_columns_are_right_aligned`。レイアウトは TestBackend のスナップショットを一時テストで印字して目視した（実 TTY は無し）。
 
+## Task 9: 推移グラフの目盛・行クリックによる選択・ビルド設定の固定（2026-10-18 / commit 477af67 の後）
+
+要求: 「cpu, gpu trendの縦軸と横軸に目盛を追加．プロセス選択をクリックに対応させて．コンパイルしたパッケージをいちいち削除しないで．」
+
+調査結果:
+
+- 推移グラフは `Sparkline` で描いていたため目盛を出せない。目盛には `Chart`（`Axis` を持つ）が要る。
+- ratatui 0.29 の `Chart::layout` は下から「x 目盛 1 行 → x 軸 1 行 → グラフ」を取るので、推移パネルの最小高は 6 行（枠 2 + 目盛 2 + グラフ 2）。`graph_width == 0` で debug_assert するため、狭いときは枠だけ描いて戻す。
+- `Axis::labels` は 2 個未満で panic、4 個以上で位置が崩れる（`ratatui-0.29.0/src/widgets/chart.rs:88-90`）。
+- 行クリックは描画と当たり判定を一致させる必要がある。`TableState::offset()` は描画時にしか確定しないので、描画直後に `App` へ控える。
+- 「コンパイルしたパッケージをいちいち削除しないで」は、cargo 用の proxy 設定を毎回作って消していた運用（workspace の `.cargo/config.toml`）を指す。
+
+| # | 変更 | ファイル |
+|---|---|---|
+| 1 | `graph_panel` を `Sparkline` から `Chart` + `Dataset(Marker::Braille, GraphType::Line)` に変更。縦軸 `0〜100`（`0` / `50` / `100`）、横軸 `0〜HISTORY_LEN-1`（`-60s` / `-30s` / `now`）、目盛色 `Gray` | ui.rs |
+| 2 | `TREND_H = 6` を導入し、推移パネルの表示条件を高さ 6 行以上に（`trend_row` と Processes の余り判定の両方で共有） | ui.rs |
+| 3 | `processes_tab` を `&mut App` にし、`render_stateful_widget` の直後に `app.rows_area` / `app.rows_offset` を控える | ui.rs |
+| 4 | `App` に `rows_area: Rect` / `rows_offset: usize` を追加し、`row_at(column, row)` と行の左クリックで選択（モーダルは `leave_modal()` で閉じる） | app.rs |
+| 5 | `draw` を `&mut App` に変更（テスト用 `snapshot` は `App` を clone して描く） | ui.rs, main.rs |
+| 6 | proxy 設定を `.cargo-home/config.toml`（`CARGO_HOME` 配下）へ移し、workspace の `.cargo/config.toml` は作らない | .cargo-home/config.toml（git 管理外） |
+
+設計判断:
+
+- 目盛は `Chart` の `Axis` で出す。`Sparkline` に目盛の概念は無い（自前で 1 行描くと ratatui が持っているものを再実装することになる）。
+- 軸ラベルは 3 個に固定（`0/50/100` と `-60s/-30s/now`）。2 個未満は panic、4 個以上は位置が崩れるため。
+- 行の当たり判定は「描画に使った矩形 + 実際のオフセット」で行う。`selected` から逆算する推測はしない（選択行が画面外のときずれる）。
+- proxy 設定は `~/.cargo` でも workspace の `.cargo/` でもなく `CARGO_HOME`（`.cargo-home/`）に置く。clippy が内部で起動する `cargo check` にも効き、ユーザーの環境を汚さず、毎回の削除も不要になる。
+
+検証（2026-10-18）: `cargo test` **50 passed**、`cargo clippy --all-targets -- -D warnings` 警告なし。追加テスト: `trend_charts_show_axis_labels` / `click_on_a_table_row_selects_that_row` / `clicking_a_rendered_row_selects_that_process` / `click_on_a_row_cancels_a_pending_kill`。レイアウトは一時テストでスナップショットを印字して目視した（実 TTY は無し）。
+
 ---
 
 ## 完了条件
 
-1. `cargo test` が全て PASS する。（46 passed を確認）
+1. `cargo test` が全て PASS する。（50 passed を確認）
 2. `cargo clippy -- -D warnings` が警告なしで通る。（`--all-targets` で確認）
 3. `cargo run` でパフォーマンスタブとプロセスタブが動作し、`q` で終了後に端末が正常状態に戻る。（TTY が無く未検証。マウスのホイール / タブクリック / モーダルも同様に未検証）
 4. spec の §2.1 の 3 項目（パフォーマンスグラフ / プロセス一覧 / kill）が手動確認できる。（TTY が無く未検証）

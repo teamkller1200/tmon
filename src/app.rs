@@ -1,6 +1,7 @@
 use std::collections::VecDeque;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, MouseButton, MouseEvent, MouseEventKind};
+use ratatui::layout::Rect;
 
 use crate::metrics::{KillOutcome, Metrics, ProcessRow, kill_blocked_reason, own_pid};
 
@@ -9,7 +10,7 @@ pub const HISTORY_LEN: usize = 60;
 
 
 /// 末尾 HISTORY_LEN 個だけ保持する数値履歴。
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct History(VecDeque<u64>);
 
 impl History {
@@ -144,7 +145,7 @@ impl Tab {
     }
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct App {
     pub tab: Tab,
     pub metrics: Metrics,
@@ -165,6 +166,10 @@ pub struct App {
     pub pending_kill: Option<u32>,
     pub pending_name: Option<String>,
     pub pending_start: Option<u64>,
+    /// プロセス表を描いた矩形と、そのとき Table が使ったスクロール量。ui が毎フレーム書き、
+    /// マウスクリックをどの行に当てるかの判定に使う。
+    pub rows_area: Rect,
+    pub rows_offset: usize,
 }
 
 impl Default for App {
@@ -190,6 +195,8 @@ impl Default for App {
             pending_kill: None,
             pending_name: None,
             pending_start: None,
+            rows_area: Rect::ZERO,
+            rows_offset: 0,
         }
     }
 }
@@ -312,6 +319,13 @@ impl App {
                     self.tab = tab;
                 }
             }
+            // 表の行のクリックでその行を選ぶ（枠と見出しの 2 行は `row_at` が除く）。
+            MouseEventKind::Down(MouseButton::Left) if self.tab == Tab::Processes => {
+                if let Some(index) = self.row_at(mouse.column, mouse.row) {
+                    self.leave_modal();
+                    self.selected = index;
+                }
+            }
             // ホイール 1 ノッチ = 1 行。
             MouseEventKind::ScrollDown if self.tab == Tab::Processes => {
                 self.move_selection(1);
@@ -322,6 +336,23 @@ impl App {
             _ => {}
         }
         Action::None
+    }
+
+    /// 画面座標からプロセス表の行番号を引く。`rows_area` / `rows_offset` は ui が描画時に書く。
+    /// 表の外・枠・見出し・データより下は None。
+    fn row_at(&self, column: u16, row: u16) -> Option<usize> {
+        let area = self.rows_area;
+        let top = area.y + 2; // 枠 1 行 + 見出し 1 行
+        if area.is_empty()
+            || row < top
+            || row >= area.bottom()
+            || column < area.x
+            || column >= area.right()
+        {
+            return None;
+        }
+        let index = self.rows_offset + (row - top) as usize;
+        (index < self.visible().len()).then_some(index)
     }
 
     /// モーダル（kill の確認・フィルタ入力）を閉じる。
@@ -668,6 +699,46 @@ mod tests {
         app.on_key(key(KeyCode::Char('x')));
         assert_eq!(app.mode, Mode::ConfirmKill, "確認プロンプトが出ていない");
         assert_eq!(app.pending_kill, Some(highlighted), "ハイライト行以外を kill しようとした");
+    }
+
+    /// 表の行のクリックが、その行（`rows_offset` を足した行）を選ぶ。
+    #[test]
+    fn click_on_a_table_row_selects_that_row() {
+        let mut app = app_with_processes(&[
+            ("a", 1, 5.0),
+            ("b", 2, 4.0),
+            ("c", 3, 3.0),
+            ("d", 4, 2.0),
+        ]);
+        app.tab = Tab::Processes;
+        app.rows_area = Rect::new(0, 1, 80, 12);
+        // 枠 1 行 + 見出し 1 行の下（y = 3）が最初のデータ行。
+        app.on_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 5, 4));
+        assert_eq!(app.selected, 1);
+
+        // 見出し行・表の外は選択を変えない。
+        app.on_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 5, 2));
+        assert_eq!(app.selected, 1, "見出し行で選択が動いた");
+        app.on_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 5, 40));
+        assert_eq!(app.selected, 1, "表の外で選択が動いた");
+
+        // スクロール中は、そのとき見えている行を選ぶ。
+        app.rows_offset = 2;
+        app.on_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 5, 3));
+        assert_eq!(app.selected, 2);
+    }
+
+    /// クリックはモーダルを閉じる（見えない対象への確認が残らないように）。
+    #[test]
+    fn click_on_a_row_cancels_a_pending_kill() {
+        let mut app = app_with_processes(&[("notepad.exe", 1234, 1.0)]);
+        app.tab = Tab::Processes;
+        app.rows_area = Rect::new(0, 1, 80, 12);
+        app.request_kill(Some(999));
+        assert_eq!(app.mode, Mode::ConfirmKill);
+        app.on_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 5, 3));
+        assert_eq!(app.mode, Mode::Normal);
+        assert_eq!(app.pending_kill, None);
     }
 
     #[test]

@@ -113,7 +113,7 @@ fn main() -> io::Result<()> {
             next_sample = now + tick;
         }
 
-        guard.terminal().draw(|f| ui::draw(f, &app))?;
+        guard.terminal().draw(|f| ui::draw(f, &mut app))?;
 
         // 次の tick まで入力待ち。1 キー処理ごとにループ先頭へ戻って必ず再描画する。
         let wait = next_sample.saturating_duration_since(now).max(Duration::from_millis(10));

@@ -1,11 +1,15 @@
-use crate::app::{App, History, Mode, SortKey, StatusKind, Tab};
+use crate::app::{App, History, HISTORY_LEN, Mode, SortKey, StatusKind, Tab};
 use crate::format::{bar_string, bytes, percent, rate};
 use crate::gpu::{gpu_util_string, vram_string};
 use ratatui::{
     layout::{Alignment, Constraint, Layout, Rect},
     style::{Color, Modifier, Style},
+    symbols::Marker,
     text::{Line, Span},
-    widgets::{Block, Borders, Cell, Clear, Paragraph, Row, Sparkline, Table, TableState, Tabs},
+    widgets::{
+        Axis, Block, Borders, Cell, Chart, Clear, Dataset, GraphType, Paragraph, Row, Sparkline,
+        Table, TableState, Tabs,
+    },
 };
 
 /// パネルの枠とタイトルをアクセント色で作る。
@@ -41,30 +45,53 @@ fn metric_panel(
     f.render_widget(sparkline.style(Style::default().fg(color)), rows[1]);
 }
 
-/// 見出し + グラフだけのパネル（枠 2 行以外は全部グラフ）。
-fn graph_panel(
-    f: &mut ratatui::Frame<'_>,
-    area: Rect,
-    title: &str,
-    color: Color,
-    sparkline: Sparkline<'_>,
-) {
-    f.render_widget(panel_block(title, color), area);
-    f.render_widget(
-        sparkline.style(Style::default().fg(color)),
-        panel_block(title, color).inner(area),
-    );
+/// 推移グラフを出すのに要る高さ（枠 2 + 目盛 1 + 軸 1 + グラフ 2）。
+const TREND_H: u16 = 6;
+
+/// 見出し + 目盛付きの推移グラフ（枠 2 行以外は全部グラフ）。
+/// 履歴は 1 秒 tick なので、横軸は右端が現在。
+fn graph_panel(f: &mut ratatui::Frame<'_>, area: Rect, title: &str, color: Color, history: &History) {
+    let block = panel_block(title, color);
+    // Chart は下から「x 目盛 1 行 + 軸 1 行 + グラフ」を積むので、これ未満では目盛が入らない。
+    if block.inner(area).height < 3 || block.inner(area).width < 12 {
+        f.render_widget(block, area);
+        return;
+    }
+    let points: Vec<(f64, f64)> =
+        history.as_vec().iter().enumerate().map(|(i, v)| (i as f64, *v as f64)).collect();
+    // 横幅いっぱいに古い順で並べる（履歴が 60 個に満たないうちは左から伸びる）。
+    let chart = Chart::new(vec![
+        Dataset::default()
+            .marker(Marker::Braille)
+            .graph_type(GraphType::Line)
+            .style(Style::default().fg(color))
+            .data(&points),
+    ])
+    .x_axis(
+        Axis::default()
+            .bounds([0.0, (HISTORY_LEN - 1) as f64])
+            .labels(["-60s", "-30s", "now"])
+            .style(Style::default().fg(Color::Gray)),
+    )
+    .y_axis(
+        Axis::default()
+            .bounds([0.0, 100.0])
+            .labels(["0", "50", "100"])
+            .style(Style::default().fg(Color::Gray)),
+    )
+    .block(block);
+    f.render_widget(chart, area);
 }
 
-/// 空き領域に CPU と GPU の推移を左右に並べる。高さ 4 未満では枠すら入らないので描かない。
+/// 空き領域に CPU と GPU の推移を左右に並べる。目盛が入らない高さでは描かない。
 fn trend_row(f: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
-    if area.height < 4 {
+    if area.height < TREND_H {
         return;
     }
     let cols =
         Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)]).split(area);
-    graph_panel(f, cols[0], "CPU trend", Color::LightBlue, spark(&app.hist_cpu, Some(100)));
-    graph_panel(f, cols[1], "GPU trend", Color::LightYellow, spark(&app.hist_gpu, Some(100)));
+    graph_panel(f, cols[0], "CPU trend", Color::LightBlue, &app.hist_cpu);
+    graph_panel(f, cols[1], "GPU trend", Color::LightYellow, &app.hist_gpu);
 }
 
 fn performance_tab(f: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
@@ -276,12 +303,13 @@ fn right(width: u16, text: &str) -> String {
 }
 
 /// プロセス一覧。選択行は `app.selected` から毎フレーム作り直す（範囲外に出ないよう追従する）。
-fn processes_tab(f: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
+/// 描くついでに表の矩形とスクロール量を `App` に控える（クリックされた行を引くため）。
+fn processes_tab(f: &mut ratatui::Frame<'_>, area: Rect, app: &mut App) {
     let rows = app.visible();
     // 一覧が画面を埋めないときだけ、下の空きに CPU/GPU の推移を出す。
     // テーブルの必要高さは「枠 2 + 見出し 1 + 行数」。
     let leftover = area.height.saturating_sub(rows.len() as u16 + 3);
-    let (table_area, trend_area) = if leftover >= 4 {
+    let (table_area, trend_area) = if leftover >= TREND_H {
         let c = Layout::vertical([Constraint::Min(3), Constraint::Length(leftover)]).split(area);
         (c[0], c[1])
     } else {
@@ -326,10 +354,13 @@ fn processes_tab(f: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
         state.select(Some(app.selected.min(rows.len() - 1)));
     }
     f.render_stateful_widget(table, table_area, &mut state);
+    // Table が実際に使ったスクロール量は render 後でないと分からない。
+    app.rows_area = table_area;
+    app.rows_offset = state.offset();
     trend_row(f, trend_area, app);
 }
 
-pub fn draw(f: &mut ratatui::Frame<'_>, app: &App) {
+pub fn draw(f: &mut ratatui::Frame<'_>, app: &mut App) {
     let screen = f.area();
     let chunks = Layout::vertical([
         Constraint::Length(1),
@@ -382,9 +413,11 @@ pub fn draw(f: &mut ratatui::Frame<'_>, app: &App) {
 /// 現状はテスト専用なので `cfg(test)`（本体から使うようになったら属性を外す）。
 #[cfg(test)]
 pub fn snapshot(app: &App, width: u16, height: u16) -> String {
+    // draw はクリック用の幾何を App に書くので、呼び出し元のデータを汚さないよう複製して描く。
+    let mut app = app.clone();
     let backend = ratatui::backend::TestBackend::new(width, height);
     let mut terminal = ratatui::Terminal::new(backend).unwrap();
-    terminal.draw(|f| draw(f, app)).unwrap();
+    terminal.draw(|f| draw(f, &mut app)).unwrap();
 
     let buffer = terminal.backend().buffer().clone();
     let mut lines = Vec::new();
@@ -404,6 +437,7 @@ mod tests {
     use super::*;
     use crate::app::App;
     use crate::metrics::{KillOutcome, Metrics, ProcessRow};
+    use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
     use ratatui::backend::TestBackend;
 
     fn sample_gpu() -> crate::gpu::GpuStats {
@@ -494,8 +528,8 @@ mod tests {
     #[test]
     fn panels_use_their_accent_colors() {
         let mut terminal = ratatui::Terminal::new(TestBackend::new(100, 30)).unwrap();
-        let app = app_with_metrics();
-        terminal.draw(|f| draw(f, &app)).unwrap();
+        let mut app = app_with_metrics();
+        terminal.draw(|f| draw(f, &mut app)).unwrap();
         let buffer = terminal.backend().buffer();
 
         // 枠の左上の角（1 行目はタブ、以降 4 行ごとに次 のパネル）。
@@ -609,13 +643,13 @@ mod tests {
         app.tab = Tab::Processes;
         app.set_kill_result(1, KillOutcome::Killed);
         let mut terminal = ratatui::Terminal::new(TestBackend::new(100, 20)).unwrap();
-        terminal.draw(|f| draw(f, &app)).unwrap();
+        terminal.draw(|f| draw(f, &mut app)).unwrap();
         let buffer = terminal.backend().buffer();
 
         // フッタは最下行。成功は Green / 警告は Yellow / 失敗は Red。
         assert_eq!(buffer[(0, 19)].style().fg, Some(Color::Green));
         app.set_kill_result(1, KillOutcome::Failed);
-        terminal.draw(|f| draw(f, &app)).unwrap();
+        terminal.draw(|f| draw(f, &mut app)).unwrap();
         assert_eq!(terminal.backend().buffer()[(0, 19)].style().fg, Some(Color::Red));
     }
 
@@ -633,5 +667,43 @@ mod tests {
         let mut app = app_with_processes(&[("a", 1, 1.0)]);
         app.tab = Tab::Processes;
         let _ = snapshot(&app, 20, 5);
+    }
+
+    /// 推移グラフに縦軸（0/50/100）と横軸（-60s/-30s/now）の目盛が出る。
+    #[test]
+    fn trend_charts_show_axis_labels() {
+        let shot = snapshot(&app_with_metrics(), 110, 46);
+        for needle in ["100│", "50 │", "-60s", "-30s", "now"] {
+            assert!(shot.contains(needle), "{needle} が無い:
+{shot}");
+        }
+    }
+
+    fn click(column: u16, row: u16) -> MouseEvent {
+        MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column,
+            row,
+            modifiers: KeyModifiers::NONE,
+        }
+    }
+
+    /// 実際に描かれた行の位置と、クリックで選ばれる行が一致する。
+    #[test]
+    fn clicking_a_rendered_row_selects_that_process() {
+        let mut app = app_with_processes(&[("alpha.exe", 11, 5.0), ("beta.exe", 22, 4.0)]);
+        app.tab = Tab::Processes;
+        let mut terminal = ratatui::Terminal::new(TestBackend::new(100, 20)).unwrap();
+        terminal.draw(|f| draw(f, &mut app)).unwrap();
+        let line = |y: u16| {
+            (0..100u16).map(|x| terminal.backend().buffer()[(x, y)].symbol()).collect::<String>()
+        };
+        let beta_row =
+            (0..20u16).find(|&y| line(y).contains("beta.exe")).expect("beta.exe が描かれていない");
+
+        // 枠 1 行 + 見出し 1 行の下が 1 行目のデータ行（beta.exe は 2 行目）。
+        assert_eq!(beta_row, app.rows_area.y + 3, "描画とクリック判定の行がずれている");
+        app.on_mouse(click(5, beta_row));
+        assert_eq!(app.visible()[app.selected].pid, 22, "クリックした行と選択が違う");
     }
 }

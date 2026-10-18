@@ -45,7 +45,7 @@
 | `src/metrics.rs` | sysinfo の所有とサンプリング。全体/プロセスの計測値 | `Sampler`, `Metrics`, `ProcessRow`, `KillOutcome`, `rate_per_sec()`, `is_loopback_name()`, `kill_blocked_reason()` |
 | `src/app.rs` | UI 状態、履歴リングバッファ、ソート/フィルタ、キー→アクション変換 | `App`, `Tab`, `SortKey`, `Mode`, `StatusKind`, `Action`, `History`, `HISTORY_LEN`, `filter_matches()`, `sort_rows()` |
 | `src/format.rs` | 表示用フォーマット（純関数） | `bar_string()`, `bytes()`, `rate()`, `percent()` |
-| `src/ui.rs` | 描画のみ。状態を持たない | `draw(&mut Frame, &App)`。内部ヘルパー `panel_block` / `spark` / `metric_panel` / `performance_tab` / `processes_tab` は非公開。テスト専用の `snapshot(&App, u16, u16) -> String` は `#[cfg(test)]` |
+| `src/ui.rs` | 描画。加えて行クリックの当たり判定用に、テーブルを描いた矩形とスクロール量を `App` へ控える | `draw(&mut Frame, &mut App)`。内部ヘルパー `panel_block` / `spark` / `metric_panel` / `performance_tab` / `processes_tab` / `graph_panel` / `trend_row` / `modal` は非公開。テスト専用の `snapshot(&App, u16, u16) -> String` は `#[cfg(test)]`（渡された `App` を複製して描く） |
 
 `app.rs` は sysinfo に依存しない（純粋な UI 状態＋入力なのでテストが容易）。`metrics.rs` は ratatui に依存しない。
 
@@ -59,7 +59,7 @@ loop {
         app.on_tick(m);                    // metrics 差し替え + 履歴 push + 選択位置クランプ
         next_sample = now + 1s;
     }
-    terminal.draw(|f| ui::draw(f, &app))?;
+    terminal.draw(|f| ui::draw(f, &mut app))?;
     // 次のサンプリング時刻まで待ち、キーまたはマウスを 1 つだけ処理する。
     // 1 イベントごとにループ先頭へ戻るので、確認プロンプトは必ず描かれてから y が効く。
     // → Action::None | Quit | Kill(pid, start_secs)
@@ -246,9 +246,13 @@ Processes タブ（`s`=CPU 降順が既定。3 行目が選択行で、実際は
 
 
 
-┌─ CPU trend ────────────────────────────────────────┐┌─ GPU trend ────────────────────────────────────────┐
-│  ▄▄▄▄▅▅▅▅▅▅▅▅▅▄▄▄▄▄▄▄▄▄▄▅▅▅▅▅▅▅▅▅▄▄▃▃▃▂▂▁▁▁▁▁▁▁▁▁▂▂▂▂▂▃▃▃▃▃▃▃▃▃▃▄▄▄▄▄▅▆▆▆▇▇▇▇▇▇▇▆▆▆▅▅▅▄▄▄▃▃▃▃▃▄▄▄││  ▃▃▄▄▄▅▅▅▆▆▆▆▆▇▇▇▇▇▇▇▇▇▇▇▆▆▆▆▆▅▅▅▄▄▄▄▃▄▄▄▅▅▅▅▆▆▆▆▇▇▇▇▇▇▇▇▇▇▇▇▆▆▆▆▅▅▅▅▄▄▄▃▄▄▄▄▅▅▅▆▆▆▆▆▇▇▇▇▇▇▇▇▇▇▇▆│
-└────────────────────────────────────────────────────┘└────────────────────────────────────────────────────┘
+┌─ CPU trend ──────────────────────────────────────────┐┌─ GPU trend ──────────────────────────────────────────┐
+│100│                                                  ││100│                                                  │
+│50 │                                                  ││50 │                                                  │
+│0  │                                                  ││0  │                                                  │
+│   └──────────────────────────────────────────────────││   └──────────────────────────────────────────────────│
+│-60s                      -30s                     now││-60s                      -30s                     now│
+└──────────────────────────────────────────────────────┘└──────────────────────────────────────────────────────┘
  killed PID 2210    Filter: (none)   (/)    x kill    s sort cpu desc    r reverse
 ```
 
@@ -309,7 +313,7 @@ kill 確認中（`x` 押下後。画面中央のモーダル、枠は `Color::Ye
 | `Network` | `v 1.2 MB/s   ^ 300 KB/s` | rx+tx 合計（max 自動） |
 | `GPU` | `45%` + `bar_string(45, 28)` + `   TEMP 61C   PWR 120 / 320W   FAN 40%` | 使用率%（max 100） |
 | `Cores (16)` | コアごとに 1 行 `cpu00 12% ██░░░░░░░`（`bar_string(pct, 9)`）。高さは「枠 2 + コア数」だけ使う | なし（高さが足りない分は表示しない。スクロールなし） |
-| `CPU trend` / `GPU trend` | なし（グラフのみ） | 全体 CPU% / GPU%（max 100）。左右 50% ずつ、空きが 4 行以上あるときだけ（§6.2.1） |
+| `CPU trend` / `GPU trend` | なし（グラフのみ） | 全体 CPU% / GPU%（縦軸 0〜100 固定）。左右 50% ずつ、空きが 6 行以上あるときだけ（§6.2.1） |
 
 - GPU 不在（nvidia-smi なし）の場合は `GPU unavailable` を表示する（既存挙動を踏襲）。
 - スパークラインは `Sparkline::default().data(history.as_vec()).max(m)`。`data` は `Vec<u64>` を渡す（`&[u64]` は `Into<SparklineBar>` を満たさないため不可）。
@@ -317,7 +321,10 @@ kill 確認中（`x` 押下後。画面中央のモーダル、枠は `Color::Ye
 #### 6.2.1 空き領域の推移グラフ
 
 - `Cores` は「枠 2 + コア数」の高さだけ使い、残り（`Min(0)`）を `CPU trend` / `GPU trend` に回す。
-- 高さ 4 未満では描かない（枠 2 行 + グラフ 1 行が最小のため）。両パネルは `Constraint::Percentage(50)` で左右に並べる。
+- 高さ `TREND_H` = 6 行以上（枠 2 + x 目盛 1 + x 軸 1 + グラフ 2）あるときだけ描く。両パネルは `Constraint::Percentage(50)` で左右に並べる。
+- 中身は `Sparkline` ではなく `Chart` + `Dataset`（`Marker::Braille` / `GraphType::Line`、線の色はパネルのアクセント色）にする。目盛を出すには `Chart` が必要なため。
+- 目盛: 縦軸 `Axis::default().bounds([0.0, 100.0]).labels(["0", "50", "100"])`、横軸 `Axis::default().bounds([0.0, (HISTORY_LEN - 1) as f64]).labels(["-60s", "-30s", "now"])`（`HISTORY_LEN - 1` = 59 なので右端が現在）。`Axis::labels` は 2〜3 個にする（ratatui 0.29 は 2 個未満で panic、4 個以上は位置が崩れる）。目盛の色は `Color::Gray`。
+- `Chart` のレイアウトは下から「x 目盛 1 行 → x 軸 1 行 → グラフ」を取る。枠の中が 3 行未満または 12 桁未満なら `.block()` の枠だけ描いて戻す（`graph_width == 0` の debug_assert を踏まないため）。
 - これにより、ターミナルが高いときに `Cores` が空白だらけの大きな枠になるのを避けられる。
 
 ### 6.3 Processes タブ
@@ -325,9 +332,10 @@ kill 確認中（`x` 押下後。画面中央のモーダル、枠は `Color::Ye
 - 列: `Name` (Min 20) / `PID` (7) / `CPU%` (7) / `MEM` (10) / `DISK R` (11) / `DISK W` (11)。数値列（`PID` 以降）は幅いっぱいに右寄せし、見出しも同じ幅で右寄せする（桁が揃って読みやすい）。
 - 行の選択は `TableState` + `Table::row_highlight_style(Style::default().bg(Color::DarkGray))`。`highlight_symbol` は使わない（列がずれるため）。`TableState` は描画時に `app.selected` から作る（ratatui が選択行が見えるようスクロール量を再計算する）。
 - マウスホイール（`ScrollUp` / `ScrollDown`）は選択を 1 行動かす（1 ノッチ = 1 行）。ビューだけを動かさないのは、ratatui の `Table` が選択行に追従してスクロールするため、見えていない行に `x` が効くのを避けるため。
+- データ行の左クリックでその行を選択する（`x` の対象がクリックした行になる）。当たり判定を描画と一致させるため、テーブルを描いた矩形と `TableState::offset()` を描画時に `App::rows_area` / `App::rows_offset` へ控え、`rows_area.y + 2`（枠 1 行 + 見出し 1 行）を引いた行に `rows_offset` を足して行番号にする。モーダル表示中のクリックは `leave_modal()` で閉じてから選択する。
 - フィルタは中央モーダルで入力し、現在の文字列はフッタのキーガイドにも出す。
 - フッタ（Processes タブのみ。Performance タブは空）: `Filter: (none)   (/)    x kill    s sort cpu desc    r reverse`。先頭にステータスメッセージを付け、色は §6.0 の表に従う（`Tab switch` と `q quit` はヘッダにある）。
-- 一覧が画面を埋めないときは、下の空きに `CPU trend` / `GPU trend` を出す（§6.2.1 と同じウィジェット）。テーブルの必要高さは「枠 2 + 見出し 1 + 行数」で、余りが 4 行以上のときだけ描く。
+- 一覧が画面を埋めないときは、下の空きに `CPU trend` / `GPU trend` を出す（§6.2.1 と同じウィジェット）。テーブルの必要高さは「枠 2 + 見出し 1 + 行数」で、余りが `TREND_H`（6 行）以上のときだけ描く。
 
 ### 6.4 モーダル（フィルタ入力・kill 確認）
 
@@ -378,9 +386,11 @@ kill 確認中（`x` 押下後。画面中央のモーダル、枠は `Color::Ye
 |---|---|
 | ホイール上下（Processes タブ） | 選択を 1 行上下（1 ノッチ = 1 行） |
 | タブ見出しの左クリック（1 行目） | そのタブへ切替 |
+| プロセス表のデータ行の左クリック | その行を選択（開いていればモーダルを閉じる） |
 
 - ヒットテストを描画と一致させるため、`Tab::titles()` を `Tabs` ウィジェットと `Tab::hit` の両方で使う。桁は「左 pad 1 + タイトル + 右 pad 1 +（最後でなければ）区切り 1」で、区切りは左のタブに帰属させる（タブ境界に無反応の 1 桁を作らない）。
 - タブを切り替える前に `leave_modal()` で Filter / ConfirmKill を閉じる（タブを移った先に、前のタブの対象に対する確認が残らないようにする）。
+- 行の当たり判定は「描画に使った矩形 + 実際のスクロール量」で行う。`TableState::offset()` は描画時にしか確定しないため、`render_stateful_widget` の直後に `App` へ控える（推測値を使わないので、選択行が画面外にあってもずれない）。
 - `EnableMouseCapture` はマウス移動も報告する（crossterm は `?1003h` を送る）。移動イベントは状態を変えず読み捨て、再描画もしない。
 
 ## 8. kill の安全設計
@@ -429,5 +439,6 @@ kill 確認中（`x` 押下後。画面中央のモーダル、枠は `Color::Ye
 - CPU% の正規化は「全コア合計 / コア数」であり、タスクマネージャーの「CPU 時間 / 経過時間」とは計算式が異なるため厳密一致はしない。
 - マウスキャプチャを有効にするため、ターミナル標準のテキスト選択は Shift 併用になる。
 - マウスイベントを通知しないターミナル/多重化ではホイールとクリックが届かない（同じ操作はキーでもできる: j/k/PgDn/PgUp/Tab）。
-- `CPU trend` / `GPU trend` は空き領域があるときだけ出る。一覧やパネルが画面を埋めていれば表示されない（その場合は各パネル内のスパークラインを見る）。
+- `CPU trend` / `GPU trend` は空き領域があるときだけ出る。一覧やパネルが画面を埋めていれば表示されない（その場合は各パネル内のスパークラインを見る）。高さ 6 行未満（枠 2 + 目盛 2 + グラフ 2）でも出ない。
+- 推移グラフの縦軸は 0〜100% 固定（自動スケールしない）ので、使用率が低いときの細かな変化は潰れて見える。
 - ホイールは 1 ノッチ = 1 行なので、長い一覧ではキー（`j` / `PageDown`）より遅い。
