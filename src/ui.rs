@@ -5,7 +5,7 @@ use ratatui::{
     layout::{Alignment, Constraint, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Cell, Paragraph, Row, Sparkline, Table, TableState, Tabs},
+    widgets::{Block, Borders, Cell, Clear, Paragraph, Row, Sparkline, Table, TableState, Tabs},
 };
 
 /// パネルの枠とタイトルをアクセント色で作る。
@@ -39,6 +39,32 @@ fn metric_panel(
         .split(panel_block(title, color).inner(area));
     f.render_widget(Paragraph::new(text).style(Style::default().fg(color)), rows[0]);
     f.render_widget(sparkline.style(Style::default().fg(color)), rows[1]);
+}
+
+/// 見出し + グラフだけのパネル（枠 2 行以外は全部グラフ）。
+fn graph_panel(
+    f: &mut ratatui::Frame<'_>,
+    area: Rect,
+    title: &str,
+    color: Color,
+    sparkline: Sparkline<'_>,
+) {
+    f.render_widget(panel_block(title, color), area);
+    f.render_widget(
+        sparkline.style(Style::default().fg(color)),
+        panel_block(title, color).inner(area),
+    );
+}
+
+/// 空き領域に CPU と GPU の推移を左右に並べる。高さ 4 未満では枠すら入らないので描かない。
+fn trend_row(f: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
+    if area.height < 4 {
+        return;
+    }
+    let cols =
+        Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)]).split(area);
+    graph_panel(f, cols[0], "CPU trend", Color::LightBlue, spark(&app.hist_cpu, Some(100)));
+    graph_panel(f, cols[1], "GPU trend", Color::LightYellow, spark(&app.hist_gpu, Some(100)));
 }
 
 fn performance_tab(f: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
@@ -142,13 +168,17 @@ fn performance_tab(f: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
             Line::from(format!("cpu{i:02} {pct:>3}% {}", bar_string(pct, 9)))
         })
         .collect::<Vec<_>>();
+    // Cores は本来の高さ（枠 2 + コア数）だけ使い、余った下の空きを CPU/GPU の推移に回す。
+    let cores_h = (m.per_core.len() as u16 + 2).min(rows[5].height);
+    let rest = Layout::vertical([Constraint::Length(cores_h), Constraint::Min(0)]).split(rows[5]);
     let title = format!("Cores ({})", m.per_core.len());
     f.render_widget(
         Paragraph::new(cores)
             .style(Style::default().fg(Color::LightBlue))
             .block(panel_block(&title, Color::LightBlue)),
-        rows[5],
+        rest[0],
     );
+    trend_row(f, rest[1], app);
 }
 
 fn sort_label(key: SortKey) -> &'static str {
@@ -162,57 +192,129 @@ fn sort_label(key: SortKey) -> &'static str {
 }
 
 /// フッタ行の文言。パフォーマンスタブでは何も出さない（操作はヘッダに書いてある）。
+/// 入力と確認は中央のモーダルに出すので、ここは常にキーガイド（q / Tab はヘッダにある）。
 fn footer_text(app: &App) -> String {
     if app.tab != Tab::Processes {
         return String::new();
     }
-    let base = match app.mode {
-        Mode::Filter => format!("Filter: {}_   (Enter/Esc: close)", app.filter),
-        Mode::ConfirmKill => {
-            let target = match (&app.pending_kill, &app.pending_name) {
-                (Some(pid), Some(name)) => format!("PID {pid} ({name})"),
-                _ => "PID ?".to_string(),
-            };
-            format!("Kill {target}? [y/N]")
-        }
-        Mode::Normal => {
-            let filter = if app.filter.is_empty() { "(none)".to_string() } else { app.filter.clone() };
-            let order = if app.desc { "desc" } else { "asc" };
-            format!(
-                "Filter: {filter}   (/)    x kill    s sort {}{order}    r reverse    Tab switch    q quit",
-                sort_label(app.sort)
-            )
-        }
-    };
+    let filter = if app.filter.is_empty() { "(none)".to_string() } else { app.filter.clone() };
+    let order = if app.desc { "desc" } else { "asc" };
+    let base = format!(
+        "Filter: {filter}   (/)    x kill    s sort {} {order}    r reverse",
+        sort_label(app.sort)
+    );
+    // 結果を先頭に出す: 狭いターミナルで切れるのはキーガイド側にする。
     match &app.status {
-        Some(status) => format!("{base}    {status}"),
+        Some(status) => format!("{status}    {base}"),
         None => base,
     }
+}
+
+/// 画面中央の矩形（ターミナルが小さければそこに収まるまで縮める）。
+fn centered(area: Rect, width: u16, height: u16) -> Rect {
+    let w = width.min(area.width);
+    let h = height.min(area.height);
+    Rect { x: area.x + (area.width - w) / 2, y: area.y + (area.height - h) / 2, width: w, height: h }
+}
+
+/// 中央のモーダル枠を描く。中身は 2 行（枠が隠れないよう Clear で下を消す）。
+fn modal(
+    f: &mut ratatui::Frame<'_>,
+    screen: Rect,
+    title: &str,
+    color: Color,
+    body: [String; 2],
+) {
+    let rect = centered(screen, 56, 4);
+    f.render_widget(Clear, rect);
+    f.render_widget(panel_block(title, color), rect);
+    let rows = Layout::vertical([Constraint::Length(1), Constraint::Length(1)])
+        .split(panel_block(title, color).inner(rect));
+    let [first, second] = body;
+    f.render_widget(Paragraph::new(first).style(Style::default().fg(Color::White)), rows[0]);
+    f.render_widget(Paragraph::new(second).style(Style::default().fg(Color::Gray)), rows[1]);
+}
+
+/// kill の確認（y 以外はすべて中止）。
+fn confirm_modal(f: &mut ratatui::Frame<'_>, screen: Rect, app: &App) {
+    let Some(pid) = app.pending_kill else {
+        return;
+    };
+    let name = app.pending_name.as_deref().unwrap_or("?");
+    modal(
+        f,
+        screen,
+        "Kill process",
+        Color::Yellow,
+        [format!("PID {pid} ({name})"), "[y] kill    [n] cancel".to_string()],
+    );
+}
+
+/// フィルタ入力（Enter / Esc で閉じる。絞り込みは入力と同時に効く）。
+fn filter_modal(f: &mut ratatui::Frame<'_>, screen: Rect, app: &App) {
+    modal(
+        f,
+        screen,
+        "Filter",
+        Color::Cyan,
+        [format!("{}_", app.filter), "Enter/Esc: close    Backspace: delete".to_string()],
+    );
+}
+
+/// プロセス表の数値列の幅（`processes_tab` の `widths` と揃える）。
+const PID_W: u16 = 7;
+const MEM_W: u16 = 10;
+const DISK_W: u16 = 11;
+
+/// 桁を揃えるため右寄せにする（幅より長い文字列はそのまま出す）。
+fn right(width: u16, text: &str) -> String {
+    let width = width as usize;
+    if text.chars().count() >= width {
+        return text.to_string();
+    }
+    format!("{}{text}", " ".repeat(width - text.chars().count()))
 }
 
 /// プロセス一覧。選択行は `app.selected` から毎フレーム作り直す（範囲外に出ないよう追従する）。
 fn processes_tab(f: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
     let rows = app.visible();
+    // 一覧が画面を埋めないときだけ、下の空きに CPU/GPU の推移を出す。
+    // テーブルの必要高さは「枠 2 + 見出し 1 + 行数」。
+    let leftover = area.height.saturating_sub(rows.len() as u16 + 3);
+    let (table_area, trend_area) = if leftover >= 4 {
+        let c = Layout::vertical([Constraint::Min(3), Constraint::Length(leftover)]).split(area);
+        (c[0], c[1])
+    } else {
+        (area, Rect::ZERO)
+    };
     let widths = [
         Constraint::Min(20),
-        Constraint::Length(7),
-        Constraint::Length(7),
-        Constraint::Length(10),
-        Constraint::Length(11),
-        Constraint::Length(11),
+        Constraint::Length(PID_W),
+        Constraint::Length(PID_W),
+        Constraint::Length(MEM_W),
+        Constraint::Length(DISK_W),
+        Constraint::Length(DISK_W),
     ];
+    // 数値は右寄せ（桁が揃う）。幅は下の `widths` と一致させる。
     let body = rows.iter().map(|p| {
         Row::new(vec![
             Cell::from(p.name.clone()),
-            Cell::from(p.pid.to_string()),
-            Cell::from(percent(p.cpu)),
-            Cell::from(bytes(p.memory)),
-            Cell::from(rate(p.disk_read_bps)),
-            Cell::from(rate(p.disk_write_bps)),
+            Cell::from(right(PID_W, &p.pid.to_string())),
+            Cell::from(right(PID_W, &percent(p.cpu))),
+            Cell::from(right(MEM_W, &bytes(p.memory))),
+            Cell::from(right(DISK_W, &rate(p.disk_read_bps))),
+            Cell::from(right(DISK_W, &rate(p.disk_write_bps))),
         ])
     });
-    let header = Row::new(vec!["Name", "PID", "CPU%", "MEM", "DISK R", "DISK W"])
-        .style(Style::default().fg(Color::LightBlue).add_modifier(Modifier::BOLD));
+    let header = Row::new(vec![
+        Cell::from("Name"),
+        Cell::from(right(PID_W, "PID")),
+        Cell::from(right(PID_W, "CPU%")),
+        Cell::from(right(MEM_W, "MEM")),
+        Cell::from(right(DISK_W, "DISK R")),
+        Cell::from(right(DISK_W, "DISK W")),
+    ])
+    .style(Style::default().fg(Color::LightBlue).add_modifier(Modifier::BOLD));
     let table = Table::new(body, widths)
         .header(header)
         .column_spacing(1)
@@ -223,16 +325,18 @@ fn processes_tab(f: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
     if !rows.is_empty() {
         state.select(Some(app.selected.min(rows.len() - 1)));
     }
-    f.render_stateful_widget(table, area, &mut state);
+    f.render_stateful_widget(table, table_area, &mut state);
+    trend_row(f, trend_area, app);
 }
 
 pub fn draw(f: &mut ratatui::Frame<'_>, app: &App) {
+    let screen = f.area();
     let chunks = Layout::vertical([
         Constraint::Length(1),
         Constraint::Min(0),
         Constraint::Length(1),
     ])
-    .split(f.area());
+    .split(screen);
 
     let header = Layout::horizontal([Constraint::Min(0), Constraint::Length(23)]).split(chunks[0]);
     f.render_widget(
@@ -253,14 +357,10 @@ pub fn draw(f: &mut ratatui::Frame<'_>, app: &App) {
         Tab::Processes => processes_tab(f, chunks[1], app),
     }
 
-    let style = if app.mode == Mode::ConfirmKill {
-        Style::default().fg(Color::Yellow)
-    } else if app.mode == Mode::Filter {
-        Style::default().fg(Color::Cyan)
-    } else if app.status.is_none() {
+    // spec §6.0: kill の結果は 成功=Green / 警告=Yellow / 失敗=Red。無ければキーガイド色。
+    let style = if app.status.is_none() {
         Style::default().fg(Color::DarkGray)
     } else {
-        // spec §6.0: kill の結果は 成功=Green / 警告=Yellow / 失敗=Red。
         match app.status_kind {
             StatusKind::Ok => Style::default().fg(Color::Green),
             StatusKind::Warn => Style::default().fg(Color::Yellow),
@@ -269,6 +369,13 @@ pub fn draw(f: &mut ratatui::Frame<'_>, app: &App) {
         }
     };
     f.render_widget(Paragraph::new(footer_text(app)).style(style), chunks[2]);
+
+    // 入力と確認は中央のモーダルに出す（フッタ 1 行だと狭いターミナルで切れるため）。
+    match app.mode {
+        Mode::ConfirmKill => confirm_modal(f, screen, app),
+        Mode::Filter => filter_modal(f, screen, app),
+        Mode::Normal => {}
+    }
 }
 
 /// TestBackend に 1 フレーム描画し、各行末尾の空白を trim した文字列を返す。行数は必ず `height`。
@@ -422,14 +529,60 @@ mod tests {
         let _ = snapshot(&app, 40, 20);
     }
 
+    /// 入力と確認はフッタではなく画面中央のモーダル。縦横の中央寄せと中身を桁で確認する。
     #[test]
-    fn confirm_prompt_is_shown() {
+    fn kill_confirm_modal_is_centered_on_screen() {
         let mut app = app_with_processes(&[("notepad.exe", 1234, 1.0)]);
         app.tab = Tab::Processes;
         app.request_kill(Some(999));
         let shot = snapshot(&app, 120, 30);
-        assert!(shot.contains("Kill PID 1234"), "prompt missing:\n{shot}");
-        assert!(shot.contains("[y/N]"), "prompt missing:\n{shot}");
+        let lines = shot.split('\n').collect::<Vec<_>>();
+        let top = lines.iter().position(|l| l.contains("Kill process")).expect("モーダルが無い");
+        assert_eq!(top, 13, "縦中央に無い:\n{shot}");
+        // 背後のパネルの枠が左端に残るので、モーダル内の文字の桁で中央寄せを見る。
+        let column = lines[top].chars().position(|c| c == 'K').expect("タイトルが無い");
+        assert_eq!(column, (120 - 56) / 2 + 1, "横中央に無い:\n{shot}");
+        assert!(lines[top + 1].contains("PID 1234 (notepad.exe)"), "対象が無い:\n{shot}");
+        assert!(lines[top + 2].contains("[y] kill"), "確認の文言が無い:\n{shot}");
+    }
+
+    #[test]
+    fn filter_modal_shows_the_live_input() {
+        let mut app = app_with_processes(&[("chrome.exe", 7, 1.0)]);
+        app.tab = Tab::Processes;
+        app.filter = "chr".to_string();
+        app.mode = Mode::Filter;
+        let shot = snapshot(&app, 100, 20);
+        let lines = shot.split('\n').collect::<Vec<_>>();
+        let top = lines.iter().position(|l| l.contains("Filter")).expect("モーダルが無い");
+        assert_eq!(top, 8, "縦中央に無い:\n{shot}");
+        assert!(lines[top + 1].contains("chr_"), "入力とカーソルが無い:\n{shot}");
+    }
+
+    #[test]
+    fn processes_tab_shows_trends_in_the_leftover_space() {
+        // 行が 2 つだけなので、30 行の下に空きができる。
+        let mut app = app_with_processes(&[("a.exe", 1, 1.0), ("b.exe", 2, 2.0)]);
+        app.tab = Tab::Processes;
+        let shot = snapshot(&app, 120, 30);
+        assert!(shot.contains("CPU trend"), "CPU の推移が無い:\n{shot}");
+        assert!(shot.contains("GPU trend"), "GPU の推移が無い:\n{shot}");
+    }
+
+    #[test]
+    fn trends_are_omitted_when_there_is_no_room() {
+        let mut app = app_with_processes(&[("a.exe", 1, 1.0), ("b.exe", 2, 2.0)]);
+        app.tab = Tab::Processes;
+        let shot = snapshot(&app, 120, 6);
+        assert!(!shot.contains("trend"), "空きが無いのに描かれた:\n{shot}");
+    }
+
+    #[test]
+    fn performance_tab_shows_trends_below_the_cores() {
+        // テストデータはコア 3 つなので、40 行では Cores の下が空く。
+        let shot = snapshot(&app_with_metrics(), 120, 40);
+        assert!(shot.contains("CPU trend"), "CPU の推移が無い:\n{shot}");
+        assert!(shot.contains("GPU trend"), "GPU の推移が無い:\n{shot}");
     }
 
     /// `Tab::hit` の桁計算が実際の描画と一致することを、描いたヘッダから確認する。
@@ -464,6 +617,15 @@ mod tests {
         app.set_kill_result(1, KillOutcome::Failed);
         terminal.draw(|f| draw(f, &app)).unwrap();
         assert_eq!(terminal.backend().buffer()[(0, 19)].style().fg, Some(Color::Red));
+    }
+
+    #[test]
+    fn numeric_columns_are_right_aligned() {
+        let mut app = app_with_processes(&[("a.exe", 1234, 12.5)]);
+        app.tab = Tab::Processes;
+        let shot = snapshot(&app, 100, 12);
+        assert!(shot.contains("    PID"), "見出しが右寄せでない:\n{shot}");
+        assert!(shot.contains("   1234"), "PID が右寄せでない:\n{shot}");
     }
 
     #[test]

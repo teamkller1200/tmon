@@ -7,8 +7,6 @@ use crate::metrics::{KillOutcome, Metrics, ProcessRow, kill_blocked_reason, own_
 /// スパークラインに残すサンプル数（1 秒 tick なので 60 秒分）。
 pub const HISTORY_LEN: usize = 60;
 
-/// マウスホイール 1 ノッチで動かすプロセス行数。
-const SCROLL_LINES: i32 = 3;
 
 /// 末尾 HISTORY_LEN 個だけ保持する数値履歴。
 #[derive(Debug, Default)]
@@ -314,11 +312,12 @@ impl App {
                     self.tab = tab;
                 }
             }
+            // ホイール 1 ノッチ = 1 行。
             MouseEventKind::ScrollDown if self.tab == Tab::Processes => {
-                self.move_selection(SCROLL_LINES);
+                self.move_selection(1);
             }
             MouseEventKind::ScrollUp if self.tab == Tab::Processes => {
-                self.move_selection(-SCROLL_LINES);
+                self.move_selection(-1);
             }
             _ => {}
         }
@@ -641,11 +640,34 @@ mod tests {
         ]);
         app.tab = Tab::Processes;
         app.on_mouse(mouse(MouseEventKind::ScrollDown, 0, 5));
-        assert_eq!(app.selected, 3);
-        app.on_mouse(mouse(MouseEventKind::ScrollDown, 0, 5));
+        assert_eq!(app.selected, 1, "1 ノッチ = 1 行");
+        for _ in 0..10 {
+            app.on_mouse(mouse(MouseEventKind::ScrollDown, 0, 5));
+        }
         assert_eq!(app.selected, 4, "末尾で止まる");
         app.on_mouse(mouse(MouseEventKind::ScrollUp, 0, 5));
+        assert_eq!(app.selected, 3);
+    }
+
+    /// ホイールでハイライトを送った行が、そのまま x（kill）の対象になる。
+    #[test]
+    fn kill_targets_the_row_highlighted_by_scrolling() {
+        // PID 0/4 は保護対象なので、テストでは使わない。
+        let mut app = app_with_processes(&[
+            ("a", 10, 5.0),
+            ("b", 11, 4.0),
+            ("c", 12, 3.0),
+            ("d", 13, 2.0),
+            ("e", 14, 1.0),
+        ]);
+        app.tab = Tab::Processes;
+        app.on_mouse(mouse(MouseEventKind::ScrollDown, 0, 5));
+        let highlighted = app.visible()[app.selected].pid;
         assert_eq!(app.selected, 1);
+
+        app.on_key(key(KeyCode::Char('x')));
+        assert_eq!(app.mode, Mode::ConfirmKill, "確認プロンプトが出ていない");
+        assert_eq!(app.pending_kill, Some(highlighted), "ハイライト行以外を kill しようとした");
     }
 
     #[test]

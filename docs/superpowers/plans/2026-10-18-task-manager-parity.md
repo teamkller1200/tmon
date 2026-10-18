@@ -946,10 +946,36 @@ git add -A && git commit -m "feat: add guarded process kill with confirmation"
 
 ---
 
+## Task 8: モーダル化・空き領域の推移グラフ・デザイン調整（2026-10-18 / commit cd98cca の後）
+
+要求: 「スクロールでハイライトされているプロセスをxでkillできるようにしてください。検索窓や確認プロンプトは中央にtuiのウィンドウを出す形式としてください。また，空きスペースにcpu, gpuそれぞれの仕様率の推移グラフを追加してください。最終的に，全体のデザインバランスを整えてください。」「スクロールは一行ずつするように」
+
+調査結果: `x` の対象は元から `visible()[selected]`（＝ハイライト行）で、ホイールで送った行は kill できていた。実際の使いにくさは確認プロンプトがフッタ 1 行だけで、狭いターミナルでは切れて見えないこと（中央モーダル化で解消）。
+
+| # | 変更 | ファイル |
+|---|---|---|
+| 1 | kill 確認とフィルタ入力を画面中央のモーダルに（`Clear` → 枠 → 本文 2 行。幅 `min(56, 画面幅)`、高さ 4） | ui.rs |
+| 2 | フッタはステータスを先頭 + キーガイド。`Tab switch` / `q quit` はヘッダに任せて短縮 | ui.rs |
+| 3 | `Cores` を「枠 2 + コア数」の高さに固定し、余りを `CPU trend` / `GPU trend`（左右 50%）に回す | ui.rs |
+| 4 | Processes タブでも一覧が画面を埋めないときは、下の空きに同じ推移グラフを出す | ui.rs |
+| 5 | 数値列（PID / CPU% / MEM / DISK R / DISK W）と見出しを右寄せ（`right(width, text)`） | ui.rs |
+| 6 | ホイール 1 ノッチ = 1 行（`SCROLL_LINES` を削除して `±1`） | app.rs |
+
+設計判断:
+
+- グラフは空き領域にだけ出す。一覧が画面を埋めるときはテーブルに全高を渡す（`Cores` の枠もコア数以上には伸ばさない）。
+- ステータスはフッタの先頭に置く。狭いターミナルで切れるのはキーガイド側にする。
+- モーダルの色は spec §6.0 の契約どおり kill 確認 = `Yellow` / フィルタ = `Cyan`、本文 1 行目 = `White` / 2 行目 = `Gray`。
+- `x` の対象はハイライト行。回帰テスト `kill_targets_the_row_highlighted_by_scrolling` を追加（PID 0/4 は保護対象なのでテストでは使わない）。
+
+検証（2026-10-18）: `cargo test` **46 passed**、`cargo clippy --all-targets -- -D warnings` 警告なし。追加テスト: `kill_targets_the_row_highlighted_by_scrolling` / `kill_confirm_modal_is_centered_on_screen` / `filter_modal_shows_the_live_input` / `processes_tab_shows_trends_in_the_leftover_space` / `trends_are_omitted_when_there_is_no_room` / `performance_tab_shows_trends_below_the_cores` / `numeric_columns_are_right_aligned`。レイアウトは TestBackend のスナップショットを一時テストで印字して目視した（実 TTY は無し）。
+
+---
+
 ## 完了条件
 
-1. `cargo test` が全て PASS する。（40 passed を確認）
+1. `cargo test` が全て PASS する。（46 passed を確認）
 2. `cargo clippy -- -D warnings` が警告なしで通る。（`--all-targets` で確認）
-3. `cargo run` でパフォーマンスタブとプロセスタブが動作し、`q` で終了後に端末が正常状態に戻る。（TTY が無く未検証。マウスのホイールとタブクリックも同様に未検証）
+3. `cargo run` でパフォーマンスタブとプロセスタブが動作し、`q` で終了後に端末が正常状態に戻る。（TTY が無く未検証。マウスのホイール / タブクリック / モーダルも同様に未検証）
 4. spec の §2.1 の 3 項目（パフォーマンスグラフ / プロセス一覧 / kill）が手動確認できる。（TTY が無く未検証）
 5. 実装しないもの（spec §2.2）を追加していない。
