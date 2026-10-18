@@ -173,7 +173,7 @@ pub fn percent(v: f32) -> String;  // "42.1%"
 
 ### 6.0 モックアップと配色（100x30、枠はすべて `Borders::ALL` の実線）
 
-Performance タブ（起動直後・既定）:
+Performance タブ（起動直後・既定。パネルごとのアクセント色は下の配色表を参照）:
 
 ```text
  Performance │ Processes                                                   [q] quit  [Tab] switch
@@ -257,7 +257,12 @@ kill 確認中（`x` 押下後。最下行が黄色 `Color::Yellow`）:
 
 | 対象 | 色 |
 |---|---|
-| パネル枠・数値・スパークライン | 既定（白系） |
+| CPU パネル / Cores パネル（枠・タイトル・数値・グラフ） | `Color::LightBlue` |
+| Memory パネル（同上） | `Color::LightMagenta` |
+| Disk パネル（同上） | `Color::LightGreen` |
+| Network パネル（同上） | `Color::LightCyan` |
+| GPU パネル（同上） | `Color::LightYellow` |
+| 上記以外の文字（タブヘッダ、[`q`] quit など） | 既定（白系） |
 | タブの選択中 | `Modifier::REVERSED` |
 | プロセス一覧の選択行 | 背景 `Color::DarkGray` |
 | プロセステーブルのヘッダ行 | `Modifier::BOLD` |
