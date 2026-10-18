@@ -1,6 +1,7 @@
 mod app;
 mod format;
 mod gpu;
+mod metrics;
 mod ui;
 
 use std::{
