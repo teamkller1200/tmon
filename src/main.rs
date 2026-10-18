@@ -41,26 +41,23 @@ impl Drop for TerminalGuard {
     }
 }
 
-/// キー入力を最大 `budget` の間さばく。`should_quit` が立ったら `false` を返す。
-fn pump_keys(app: &mut app::App, budget: Duration) -> io::Result<bool> {
+/// キー入力を最大 `budget` の間さばく。kill 要求が出たらその PID を返す（無ければ `None`）。
+/// 終了要求は `App::should_quit` に出るので呼び出し側のループ条件が拾う。
+fn pump_keys(app: &mut app::App, budget: Duration) -> io::Result<Option<u32>> {
     let deadline = std::time::Instant::now() + budget;
     loop {
         if app.should_quit {
-            return Ok(false);
+            return Ok(None);
         }
         let remaining = deadline.saturating_duration_since(std::time::Instant::now());
         if remaining.is_zero() {
-            return Ok(true);
+            return Ok(None);
         }
         if event::poll(remaining.min(Duration::from_millis(50)))?
             && let Event::Key(key) = event::read()?
+            && let app::Action::Kill(pid) = app.on_key(key)
         {
-            // `Action::Quit` は App 側が `should_quit` を立てるのでここでは何もしない。
-            // `Action::Kill` は Task 5 で実装する。
-            match app.on_key(key) {
-                app::Action::None | app::Action::Quit => {}
-                app::Action::Kill(_pid) => {}
-            }
+            return Ok(Some(pid));
         }
     }
 }
@@ -79,8 +76,8 @@ fn main() -> io::Result<()> {
 
         guard.terminal().draw(|f| ui::draw(f, &app))?;
 
-        if !pump_keys(&mut app, Duration::from_secs(1))? {
-            break;
+        if let Some(pid) = pump_keys(&mut app, Duration::from_secs(1))? {
+            app.set_kill_result(pid, sampler.kill(pid));
         }
     }
 

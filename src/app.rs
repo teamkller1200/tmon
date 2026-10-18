@@ -2,7 +2,7 @@ use std::collections::VecDeque;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind};
 
-use crate::metrics::{Metrics, ProcessRow};
+use crate::metrics::{KillOutcome, Metrics, ProcessRow, kill_blocked_reason, own_pid};
 
 /// スパークラインに残すサンプル数（1 秒 tick なので 60 秒分）。
 pub const HISTORY_LEN: usize = 60;
@@ -27,6 +27,8 @@ impl History {
         self.0.iter().copied().collect()
     }
 
+    /// テスト専用（本体は `as_vec()` でグラフに渡すだけ）。
+    #[cfg(test)]
     pub fn latest(&self) -> u64 {
         self.0.back().copied().unwrap_or(0)
     }
@@ -121,6 +123,8 @@ pub struct App {
     pub filter: String,
     pub mode: Mode,
     pub status: Option<String>,
+    pub pending_kill: Option<u32>,
+    pub pending_name: Option<String>,
 }
 
 impl Default for App {
@@ -142,6 +146,8 @@ impl Default for App {
             filter: String::new(),
             mode: Mode::Normal,
             status: None,
+            pending_kill: None,
+            pending_name: None,
         }
     }
 }
@@ -186,8 +192,16 @@ impl App {
                 }
                 Action::None
             }
-            // Task 5 で y/n の確認応答を実装する。
-            Mode::ConfirmKill => Action::None,
+            Mode::ConfirmKill => {
+                // y 以外（q を含む）はすべてキャンセル扱い。
+                let pid = self.pending_kill.take();
+                self.pending_name = None;
+                self.mode = Mode::Normal;
+                match (key.code, pid) {
+                    (KeyCode::Char('y') | KeyCode::Char('Y'), Some(pid)) => Action::Kill(pid),
+                    _ => Action::None,
+                }
+            }
             Mode::Normal => match key.code {
                 KeyCode::Char('q') => {
                     self.should_quit = true;
@@ -230,14 +244,37 @@ impl App {
                     self.mode = Mode::Filter;
                     Action::None
                 }
-                // Task 5 で kill 確認に差し替える。
                 KeyCode::Char('x') => {
-                    self.status = Some("kill: not implemented yet".to_string());
+                    self.request_kill(own_pid());
                     Action::None
                 }
                 _ => Action::None,
             },
         }
+    }
+
+    /// 選択行の kill を要求する。保護対象なら status に理由を出して確認を出さない。
+    pub fn request_kill(&mut self, own_pid: Option<u32>) {
+        let Some(pid) = self.selected_pid() else {
+            return;
+        };
+        let name = self.visible().get(self.selected).map(|r| r.name.clone()).unwrap_or_default();
+        if let Some(reason) = kill_blocked_reason(pid, own_pid) {
+            self.status = Some(reason.to_string());
+            return;
+        }
+        self.pending_kill = Some(pid);
+        self.pending_name = Some(name);
+        self.mode = Mode::ConfirmKill;
+    }
+
+    /// kill の結果をステータス行に反映する。
+    pub fn set_kill_result(&mut self, pid: u32, outcome: KillOutcome) {
+        self.status = Some(match outcome {
+            KillOutcome::Killed => format!("killed PID {pid}"),
+            KillOutcome::NotFound => format!("PID {pid} not found"),
+            KillOutcome::Failed => format!("failed to kill PID {pid} (permission?)"),
+        });
     }
 
     /// フィルタとソートを適用した、表示順のプロセス行。
@@ -278,7 +315,7 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::metrics::{Metrics, ProcessRow};
+    use crate::metrics::{KillOutcome, Metrics, ProcessRow};
     use crossterm::event::KeyModifiers;
 
     #[test]
@@ -381,6 +418,52 @@ mod tests {
         app.on_key(key(KeyCode::Esc));
         assert_eq!(app.mode, Mode::Normal);
         assert!(!app.should_quit); // Filter モード中の入力はコマンドとして解釈しない
+    }
+
+    #[test]
+    fn kill_request_on_protected_pid_shows_status_without_prompt() {
+        let mut app = app_with_processes(&[("System", 4, 0.0)]);
+        app.tab = Tab::Processes;
+        app.request_kill(Some(999));
+        assert_eq!(app.pending_kill, None);
+        assert_eq!(app.mode, Mode::Normal);
+        assert!(app.status.is_some());
+    }
+
+    #[test]
+    fn kill_request_then_confirm_returns_kill_action() {
+        let mut app = app_with_processes(&[("notepad.exe", 1234, 1.0)]);
+        app.tab = Tab::Processes;
+        app.request_kill(Some(999));
+        assert_eq!(app.pending_kill, Some(1234));
+        assert_eq!(app.mode, Mode::ConfirmKill);
+        assert_eq!(app.on_key(key(KeyCode::Char('n'))), Action::None);
+        assert_eq!(app.pending_kill, None);
+        assert_eq!(app.mode, Mode::Normal);
+        app.request_kill(Some(999));
+        assert_eq!(app.on_key(key(KeyCode::Char('y'))), Action::Kill(1234));
+        assert_eq!(app.mode, Mode::Normal);
+        assert_eq!(app.pending_kill, None);
+    }
+
+    #[test]
+    fn quit_key_is_ignored_while_confirming() {
+        let mut app = app_with_processes(&[("notepad.exe", 1234, 1.0)]);
+        app.tab = Tab::Processes;
+        app.request_kill(Some(999));
+        assert_eq!(app.on_key(key(KeyCode::Char('q'))), Action::None);
+        assert!(!app.should_quit);
+    }
+
+    #[test]
+    fn kill_result_updates_status() {
+        let mut app = App::new();
+        app.set_kill_result(1234, KillOutcome::Killed);
+        assert_eq!(app.status.as_deref(), Some("killed PID 1234"));
+        app.set_kill_result(1234, KillOutcome::NotFound);
+        assert_eq!(app.status.as_deref(), Some("PID 1234 not found"));
+        app.set_kill_result(1234, KillOutcome::Failed);
+        assert_eq!(app.status.as_deref(), Some("failed to kill PID 1234 (permission?)"));
     }
 
     #[test]

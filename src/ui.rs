@@ -168,7 +168,13 @@ fn footer_text(app: &App) -> String {
     }
     let base = match app.mode {
         Mode::Filter => format!("Filter: {}_   (Enter/Esc: close)", app.filter),
-        Mode::ConfirmKill => "kill? (y/n)".to_string(), // Task 5 で実装
+        Mode::ConfirmKill => {
+            let target = match (&app.pending_kill, &app.pending_name) {
+                (Some(pid), Some(name)) => format!("PID {pid} ({name})"),
+                _ => "PID ?".to_string(),
+            };
+            format!("Kill {target}? [y/N]")
+        }
         Mode::Normal => {
             let filter = if app.filter.is_empty() { "(none)".to_string() } else { app.filter.clone() };
             let order = if app.desc { "desc" } else { "asc" };
@@ -247,7 +253,9 @@ pub fn draw(f: &mut ratatui::Frame<'_>, app: &App) {
         Tab::Processes => processes_tab(f, chunks[1], app),
     }
 
-    let style = if app.status.is_some() {
+    let style = if app.mode == Mode::ConfirmKill {
+        Style::default().fg(Color::Yellow)
+    } else if app.status.is_some() {
         Style::default().fg(Color::LightYellow)
     } else {
         Style::default().fg(Color::DarkGray)
@@ -404,6 +412,16 @@ mod tests {
         let mut app = app_with_processes(&[("日本語プロセス名.exe", 333, 1.0), ("絵文字🎮.exe", 444, 2.0)]);
         app.tab = Tab::Processes;
         let _ = snapshot(&app, 40, 20);
+    }
+
+    #[test]
+    fn confirm_prompt_is_shown() {
+        let mut app = app_with_processes(&[("notepad.exe", 1234, 1.0)]);
+        app.tab = Tab::Processes;
+        app.request_kill(Some(999));
+        let shot = snapshot(&app, 120, 30);
+        assert!(shot.contains("Kill PID 1234"), "prompt missing:\n{shot}");
+        assert!(shot.contains("[y/N]"), "prompt missing:\n{shot}");
     }
 
     #[test]

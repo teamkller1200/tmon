@@ -21,6 +21,21 @@ pub fn is_loopback_name(name: &str) -> bool {
     lower.contains("loopback") || lower == "lo"
 }
 
+/// このモニタ自身の PID。`system` feature の `get_current_pid` を使う。
+pub fn own_pid() -> Option<u32> {
+    sysinfo::get_current_pid().ok().map(|p| p.as_u32())
+}
+
+/// 誤って止めるとシステムや自分が死ぬ PID をガードする。拒否理由が無ければ None。
+pub fn kill_blocked_reason(pid: u32, own_pid: Option<u32>) -> Option<&'static str> {
+    match pid {
+        0 => Some("PID 0 (System Idle Process) cannot be killed"),
+        4 => Some("PID 4 (System) cannot be killed"),
+        _ if own_pid == Some(pid) => Some("this monitor process cannot kill itself"),
+        _ => None,
+    }
+}
+
 /// 1 tick 分の計測値。
 #[derive(Clone, Debug, Default)]
 pub struct Metrics {
@@ -187,6 +202,15 @@ mod tests {
         assert!(is_loopback_name("lo"));
         assert!(!is_loopback_name("Ethernet"));
         assert!(!is_loopback_name("vEthernet (WSL)"));
+    }
+
+    #[test]
+    fn kill_blocked_reason_protects_system_and_self() {
+        assert!(kill_blocked_reason(0, Some(999)).is_some());
+        assert!(kill_blocked_reason(4, Some(999)).is_some());
+        assert!(kill_blocked_reason(999, Some(999)).is_some());
+        assert!(kill_blocked_reason(1234, Some(999)).is_none());
+        assert!(kill_blocked_reason(1234, None).is_none());
     }
 
     #[test]
