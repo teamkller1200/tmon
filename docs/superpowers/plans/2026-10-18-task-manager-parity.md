@@ -1000,11 +1000,28 @@ git add -A && git commit -m "feat: add guarded process kill with confirmation"
 
 検証（2026-10-18）: `cargo test` **50 passed**、`cargo clippy --all-targets -- -D warnings` 警告なし。追加テスト: `trend_charts_show_axis_labels` / `click_on_a_table_row_selects_that_row` / `clicking_a_rendered_row_selects_that_process` / `click_on_a_row_cancels_a_pending_kill`。レイアウトは一時テストでスナップショットを印字して目視した（実 TTY は無し）。
 
+## Task 10: Processes タブの推移グラフを削除（2026-10-18 / commit d7cac81 の後）
+
+要求: 「processタブではグラフを表示しないようにして」
+
+| # | 変更 | ファイル |
+|---|---|---|
+| 1 | `processes_tab` から空き領域の分割（`leftover` / `trend_area`）を削除し、テーブルに全領域を渡す | ui.rs |
+| 2 | テスト 2 本（`processes_tab_shows_trends_in_the_leftover_space` / `trends_are_omitted_when_there_is_no_room`）を `processes_tab_never_shows_trends`（120x30 と 120x6）に統合 | ui.rs |
+| 3 | spec のモックアップを実装どおり（枠 + `Processes` タイトル + 数値列右寄せ）に直し、§6.2.1 / §6.3 / §11 を Performance 専用に修正 | docs/specs |
+
+設計判断:
+
+- Processes タブは一覧が主役なので、下が空いていてもグラフを詰めない。`TREND_H` は Performance タブの判定にだけ残る。
+- テーブルが全領域を使うようになったので `rows_area` は描いた矩形そのものになる（クリック判定の式は変更なし）。
+
+検証（2026-10-18）: `cargo test` **49 passed**、`cargo clippy --all-targets -- -D warnings` 警告なし。
+
 ---
 
 ## 完了条件
 
-1. `cargo test` が全て PASS する。（50 passed を確認）
+1. `cargo test` が全て PASS する。（49 passed を確認）
 2. `cargo clippy -- -D warnings` が警告なしで通る。（`--all-targets` で確認）
 3. `cargo run` でパフォーマンスタブとプロセスタブが動作し、`q` で終了後に端末が正常状態に戻る。（TTY が無く未検証。マウスのホイール / タブクリック / モーダルも同様に未検証）
 4. spec の §2.1 の 3 項目（パフォーマンスグラフ / プロセス一覧 / kill）が手動確認できる。（TTY が無く未検証）

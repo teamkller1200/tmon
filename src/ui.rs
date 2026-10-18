@@ -304,17 +304,10 @@ fn right(width: u16, text: &str) -> String {
 
 /// プロセス一覧。選択行は `app.selected` から毎フレーム作り直す（範囲外に出ないよう追従する）。
 /// 描くついでに表の矩形とスクロール量を `App` に控える（クリックされた行を引くため）。
+/// 画面いっぱいを使う（推移グラフは Performance タブにだけ出す）。
 fn processes_tab(f: &mut ratatui::Frame<'_>, area: Rect, app: &mut App) {
     let rows = app.visible();
-    // 一覧が画面を埋めないときだけ、下の空きに CPU/GPU の推移を出す。
-    // テーブルの必要高さは「枠 2 + 見出し 1 + 行数」。
-    let leftover = area.height.saturating_sub(rows.len() as u16 + 3);
-    let (table_area, trend_area) = if leftover >= TREND_H {
-        let c = Layout::vertical([Constraint::Min(3), Constraint::Length(leftover)]).split(area);
-        (c[0], c[1])
-    } else {
-        (area, Rect::ZERO)
-    };
+
     let widths = [
         Constraint::Min(20),
         Constraint::Length(PID_W),
@@ -353,11 +346,10 @@ fn processes_tab(f: &mut ratatui::Frame<'_>, area: Rect, app: &mut App) {
     if !rows.is_empty() {
         state.select(Some(app.selected.min(rows.len() - 1)));
     }
-    f.render_stateful_widget(table, table_area, &mut state);
+    f.render_stateful_widget(table, area, &mut state);
     // Table が実際に使ったスクロール量は render 後でないと分からない。
-    app.rows_area = table_area;
+    app.rows_area = area;
     app.rows_offset = state.offset();
-    trend_row(f, trend_area, app);
 }
 
 pub fn draw(f: &mut ratatui::Frame<'_>, app: &mut App) {
@@ -593,22 +585,16 @@ mod tests {
         assert!(lines[top + 1].contains("chr_"), "入力とカーソルが無い:\n{shot}");
     }
 
+    /// 推移グラフは Performance タブにだけ出す（Processes タブでは、一覧が短くて
+    /// 下に空きがあっても描かない）。
     #[test]
-    fn processes_tab_shows_trends_in_the_leftover_space() {
-        // 行が 2 つだけなので、30 行の下に空きができる。
-        let mut app = app_with_processes(&[("a.exe", 1, 1.0), ("b.exe", 2, 2.0)]);
-        app.tab = Tab::Processes;
-        let shot = snapshot(&app, 120, 30);
-        assert!(shot.contains("CPU trend"), "CPU の推移が無い:\n{shot}");
-        assert!(shot.contains("GPU trend"), "GPU の推移が無い:\n{shot}");
-    }
-
-    #[test]
-    fn trends_are_omitted_when_there_is_no_room() {
-        let mut app = app_with_processes(&[("a.exe", 1, 1.0), ("b.exe", 2, 2.0)]);
-        app.tab = Tab::Processes;
-        let shot = snapshot(&app, 120, 6);
-        assert!(!shot.contains("trend"), "空きが無いのに描かれた:\n{shot}");
+    fn processes_tab_never_shows_trends() {
+        for (width, height) in [(120, 30), (120, 6)] {
+            let mut app = app_with_processes(&[("a.exe", 1, 1.0), ("b.exe", 2, 2.0)]);
+            app.tab = Tab::Processes;
+            let shot = snapshot(&app, width, height);
+            assert!(!shot.contains("trend"), "{width}x{height} で描かれた:\n{shot}");
+        }
     }
 
     #[test]
