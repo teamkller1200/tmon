@@ -62,12 +62,15 @@ fn pump_keys(app: &mut app::App, budget: Duration) -> io::Result<bool> {
 
 fn main() -> io::Result<()> {
     let mut guard = TerminalGuard::new()?;
+    // Sampler::new() は CPU 使用率の基準を取るため約 200ms ブロックする（ループ開始前に 1 度だけ）。
+    // ponytail: 計測は UI スレッドで 1Hz 実行。計測が 100ms を超えて体感に響くようなら
+    // 専用スレッド + mpsc::Receiver<Metrics> に移す（Sampler は Send なので移設のみで済む）
+    let mut sampler = metrics::Sampler::new();
     let mut app = app::App::new();
 
     while !app.should_quit {
-        // nvidia-smi は 1 tick につき 1 回だけ起動する。
-        let gpu = gpu::read_gpu_stats();
-        app.on_tick(gpu);
+        // nvidia-smi の起動も 1 tick につき 1 回だけ。
+        app.on_tick(sampler.sample());
 
         guard.terminal().draw(|f| ui::draw(f, &app))?;
 

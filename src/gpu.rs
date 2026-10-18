@@ -45,14 +45,6 @@ pub fn read_gpu_stats() -> Option<GpuStats> {
     })
 }
 
-pub fn power_percent(stats: &GpuStats) -> u32 {
-    if stats.power_limit_w <= 0.0 {
-        0
-    } else {
-        ((stats.power_w / stats.power_limit_w) * 100.0).round() as u32
-    }
-}
-
 pub fn gpu_util_string(util: u32) -> String {
     format!("{}%", util)
 }
@@ -63,21 +55,3 @@ pub fn vram_string(used_mb: u32, total_mb: u32) -> String {
     format!("{}/{}GB", used_gb, total_gb)
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn power_percent_is_normalized_to_limit() {
-        let s = GpuStats {
-            gpu_util: 50,
-            memory_used_mb: 1000,
-            memory_total_mb: 2000,
-            temperature_c: 60,
-            power_w: 150.0,
-            power_limit_w: 300.0,
-            fan_speed_pct: 50,
-        };
-        assert_eq!(power_percent(&s), 50);
-    }
-}

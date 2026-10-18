@@ -416,7 +416,7 @@ Expected: FAIL（`no method named on_tick` / `cannot find type History`）
 
 `draw` の先頭で `Tabs::new(["Performance", "Processes"]).select(app.tab as usize).highlight_style(Style::default().add_modifier(Modifier::REVERSED))` を 1 行高の領域に描く。残り領域は `match app.tab { Tab::Performance => performance_tab(f, area, app), Tab::Processes => performance_tab(f, area, app) }` とする（`Tab::Processes` の腕は Task 4 で `processes_tab(f, area, app)` に差し替える）。
 
-`performance_tab` は `Layout::vertical([Constraint::Length(4), Constraint::Length(4), Constraint::Length(4), Constraint::Length(4), Constraint::Length(4), Constraint::Min(0)])` で、上から CPU / Memory / Disk / Network / GPU を `Constraint::Length(4)`（枠 2 行 + 内容 2 行）、最後の `Cores` を `Constraint::Min(0)` にする。色は spec §6.0 の配色表のアクセント色を使い、各パネルの**枠・タイトル・数値・スパークラインを同じ色**に揃える（CPU/Cores = `Color::LightBlue`、Memory = `Color::LightMagenta`、Disk = `Color::LightGreen`、Network = `Color::LightCyan`、GPU = `Color::LightYellow`）。各パネルは `Block::default().title(コンポーネント名のみ).borders(Borders::ALL)` にし、内側を `Layout::vertical([Constraint::Length(1), Constraint::Length(1)])` で 1 行目（数値）と 2 行目（グラフ）に分ける。スパークラインは必ず `Sparkline::default().data(history.as_vec()).max(m)` の形で、`Vec<u64>` を所有で渡す（`&[u64]` は `Into<SparklineBar>` を満たさずコンパイルできない）。`Cores` は `Paragraph` に改行区切りで入れる。
+`performance_tab` は `Layout::vertical([Constraint::Length(4), Constraint::Length(4), Constraint::Length(4), Constraint::Length(4), Constraint::Length(4), Constraint::Min(0)])` で、上から CPU / Memory / Disk / Network / GPU を `Constraint::Length(4)`（枠 2 行 + 内容 2 行）、最後の `Cores` を `Constraint::Min(0)` にする。色は spec §6.0 の配色表のアクセント色を使い、各パネルの**枠・タイトル・数値・スパークラインを同じ色**に揃える（CPU/Cores = `Color::LightBlue`、Memory = `Color::LightMagenta`、Disk = `Color::LightGreen`、Network = `Color::LightCyan`、GPU = `Color::LightYellow`）。各パネルは `Block::default().title(コンポーネント名のみ).borders(Borders::ALL)` にし、内側を `Layout::vertical([Constraint::Length(1), Constraint::Length(1)])` で 1 行目（数値）と 2 行目（グラフ）に分ける。スパークラインは必ず `Sparkline::default().data(history.as_vec()).max(m)` の形で、`Vec<u64>` を所有で渡す（`&[u64]` は `Into<SparklineBar>` を満たさずコンパイルできない）。`Cores` は `Paragraph` に改行区切りで入れる。新 UI では使わなくなる `gpu::power_percent` とそのテスト `power_percent_is_normalized_to_limit` はこのステップで削除する（`gpu_util_string` / `vram_string` は継続使用）。
 
 | パネル（タイトル） | 1 行目（数値） | 2 行目（スパークライン） |
 |---|---|---|
@@ -424,12 +424,12 @@ Expected: FAIL（`no method named on_tick` / `cannot find type History`）
 | `Memory` | `12.0 GB / 31.9 GB (38%)   Swap 1.0 / 8.0 GB` + `bar_string(pct, 30)` | 使用率% / max 100 |
 | `Disk` | `R 1.2 MB/s   W 300 KB/s`（`format::rate`） | read+write 合計 / `.max()` を渡さず自動 |
 | `Network` | `v 1.2 MB/s   ^ 300 KB/s` | rx+tx 合計 / 自動 |
-| `GPU` | `45%` + `bar_string(pct, 28)` + `   TEMP 64C   PWR 150 / 320W   FAN 60%` | 使用率% / max 100。GPU 不在時はこのパネルだけ `GPU unavailable` を表示 |
+| `GPU` | `45%` + `bar_string(pct, 28)` + `   VRAM 4.0 / 8.0 GB   TEMP 64C   PWR 150 / 320W   FAN 60%` | 使用率% / max 100。GPU 不在時はこのパネルだけ `GPU unavailable` を表示 |
 | `Cores (16)` | コアごとに 1 行 `cpu00 12% ██░░░░░░░`（`bar_string(pct, 9)`） | なし（`Paragraph` の複数行。高さが足りない分は描かない） |
 
 数値は `format::bytes` / `format::rate` / `format::percent` で作る。
 
-パネルは補助関数を作らず、`performance_tab` 内でアクセント色を取る小さなクロージャ/ローカル関数（例: `let block = |title, c| Block::default().borders(Borders::ALL).border_style(Style::default().fg(c)).title(Span::styled(title, Style::default().fg(c)));`）を共有してよい（同じ 5 パネル分の枠生成をコピーしない）。
+同じ 5 パネル分の枠生成をコピーしないよう、`ui.rs` にモジュール内ヘルパー `fn panel_block(title: &str, color: Color) -> Block<'_>`（枠 + タイトルを同色）、`fn spark(history: &History, max: Option<u64>) -> Sparkline<'_>`、`fn metric_panel(f, area, title, color, text: Line<'_>, sparkline: Sparkline<'_>)` を置く。`metric_panel` は `panel_block(..).inner(area)` を `Layout::vertical([Constraint::Length(1), Constraint::Length(1)])` で 2 行に割る。公開は不要（`pub` を付けない）。
 
 GPU 不在時の表示は既存文言 `GPU unavailable` / `NVIDIA-SMI missing or unsupported GPU` をそのまま使う。
 
