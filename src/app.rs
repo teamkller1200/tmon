@@ -1,11 +1,14 @@
 use std::collections::VecDeque;
 
-use crossterm::event::{KeyCode, KeyEvent, KeyEventKind};
+use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, MouseButton, MouseEvent, MouseEventKind};
 
 use crate::metrics::{KillOutcome, Metrics, ProcessRow, kill_blocked_reason, own_pid};
 
 /// スパークラインに残すサンプル数（1 秒 tick なので 60 秒分）。
 pub const HISTORY_LEN: usize = 60;
+
+/// マウスホイール 1 ノッチで動かすプロセス行数。
+const SCROLL_LINES: i32 = 3;
 
 /// 末尾 HISTORY_LEN 個だけ保持する数値履歴。
 #[derive(Debug, Default)]
@@ -117,6 +120,32 @@ pub enum Tab {
     Processes,
 }
 
+impl Tab {
+    /// タブの並び（ui はこの順に描き、ヘッダのクリック位置もこの順で引く）。
+    pub const ALL: [Tab; 2] = [Tab::Performance, Tab::Processes];
+
+    /// ui が描くタブ見出し。
+    pub fn titles() -> [&'static str; 2] {
+        ["Performance", "Processes"]
+    }
+
+    /// ヘッダ行の桁位置からタブを引く。ratatui の Tabs は「空白 1 + 見出し + 空白 1」を
+    /// 並べ、タブの間を区切り `│` 1 桁で挟む。区切りは左のタブに含める。
+    pub fn hit(column: u16) -> Option<Tab> {
+        let titles = Self::titles();
+        let mut start = 0u16;
+        for (i, title) in titles.iter().enumerate() {
+            let last = i + 1 == titles.len();
+            let end = start + title.len() as u16 + 2 + if last { 0 } else { 1 };
+            if column < end {
+                return Some(Self::ALL[i]);
+            }
+            start = end;
+        }
+        None
+    }
+}
+
 #[derive(Debug)]
 pub struct App {
     pub tab: Tab,
@@ -213,8 +242,7 @@ impl App {
                 // y 以外（q を含む）はすべてキャンセル扱い。
                 let pid = self.pending_kill.take();
                 let start = self.pending_start.take();
-                self.pending_name = None;
-                self.mode = Mode::Normal;
+                self.leave_modal();
                 match (key.code, pid, start) {
                     (KeyCode::Char('y') | KeyCode::Char('Y'), Some(pid), Some(start)) => {
                         Action::Kill(pid, start)
@@ -271,6 +299,38 @@ impl App {
                 _ => Action::None,
             },
         }
+    }
+
+    /// マウス 1 イベントを状態に反映する。ヘッダ行の見出しクリックでタブを切り替え、
+    /// ホイールでプロセス選択を動かす。選択ごと動かすのは、見えていない行に `x` が効くのを
+    /// 防ぐため（Table は選択行が見える位置まで自分でスクロールする）。
+    pub fn on_mouse(&mut self, mouse: MouseEvent) -> Action {
+        match mouse.kind {
+            MouseEventKind::Down(MouseButton::Left) if mouse.row == 0 => {
+                // 確認プロンプトやフィルタ入力は Processes タブのフッタにしか出ないので、
+                // タブを移る前に閉じる（確認が見えないまま y が効くのを防ぐ）。
+                self.leave_modal();
+                if let Some(tab) = Tab::hit(mouse.column) {
+                    self.tab = tab;
+                }
+            }
+            MouseEventKind::ScrollDown if self.tab == Tab::Processes => {
+                self.move_selection(SCROLL_LINES);
+            }
+            MouseEventKind::ScrollUp if self.tab == Tab::Processes => {
+                self.move_selection(-SCROLL_LINES);
+            }
+            _ => {}
+        }
+        Action::None
+    }
+
+    /// モーダル（kill の確認・フィルタ入力）を閉じる。
+    fn leave_modal(&mut self) {
+        self.pending_kill = None;
+        self.pending_name = None;
+        self.pending_start = None;
+        self.mode = Mode::Normal;
     }
 
     /// 選択行が現在の一覧に収まるよう寄せる。
@@ -385,6 +445,10 @@ mod tests {
 
     fn key(code: KeyCode) -> KeyEvent {
         KeyEvent::new(code, KeyModifiers::NONE)
+    }
+
+    fn mouse(kind: MouseEventKind, column: u16, row: u16) -> MouseEvent {
+        MouseEvent { kind, column, row, modifiers: KeyModifiers::NONE }
     }
 
     fn app_with_processes(names: &[(&str, u32, f32)]) -> App {
@@ -543,5 +607,63 @@ mod tests {
         assert_eq!(app.selected, 1); // 末端で止まる
         assert_eq!(app.on_key(key(KeyCode::Char('q'))), Action::Quit);
         assert!(app.should_quit);
+    }
+
+    #[test]
+    fn tab_hit_test_matches_the_rendered_titles() {
+        assert_eq!(Tab::hit(0), Some(Tab::Performance));
+        assert_eq!(Tab::hit(12), Some(Tab::Performance));
+        assert_eq!(Tab::hit(13), Some(Tab::Performance)); // 見出しの間の区切りは左のタブ
+        assert_eq!(Tab::hit(14), Some(Tab::Processes));
+        assert_eq!(Tab::hit(24), Some(Tab::Processes));
+        assert_eq!(Tab::hit(25), None); // 見出しの右側は無効
+    }
+
+    #[test]
+    fn click_on_a_tab_header_switches_tabs() {
+        let mut app = app_with_processes(&[("a", 1, 1.0)]);
+        app.on_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 15, 0));
+        assert_eq!(app.tab, Tab::Processes);
+        app.on_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 3, 0));
+        assert_eq!(app.tab, Tab::Performance);
+        app.on_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 15, 3));
+        assert_eq!(app.tab, Tab::Performance, "ヘッダ行以外のクリックは無視する");
+    }
+
+    #[test]
+    fn wheel_scrolls_the_process_selection() {
+        let mut app = app_with_processes(&[
+            ("a", 1, 5.0),
+            ("b", 2, 4.0),
+            ("c", 3, 3.0),
+            ("d", 4, 2.0),
+            ("e", 5, 1.0),
+        ]);
+        app.tab = Tab::Processes;
+        app.on_mouse(mouse(MouseEventKind::ScrollDown, 0, 5));
+        assert_eq!(app.selected, 3);
+        app.on_mouse(mouse(MouseEventKind::ScrollDown, 0, 5));
+        assert_eq!(app.selected, 4, "末尾で止まる");
+        app.on_mouse(mouse(MouseEventKind::ScrollUp, 0, 5));
+        assert_eq!(app.selected, 1);
+    }
+
+    #[test]
+    fn wheel_is_ignored_on_the_performance_tab() {
+        let mut app = app_with_processes(&[("a", 1, 5.0), ("b", 2, 4.0)]);
+        app.on_mouse(mouse(MouseEventKind::ScrollDown, 0, 5));
+        assert_eq!(app.selected, 0);
+    }
+
+    #[test]
+    fn clicking_a_tab_cancels_a_pending_kill() {
+        let mut app = app_with_processes(&[("notepad.exe", 1234, 1.0)]);
+        app.tab = Tab::Processes;
+        app.request_kill(Some(999));
+        assert_eq!(app.mode, Mode::ConfirmKill);
+        app.on_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 3, 0));
+        assert_eq!(app.tab, Tab::Performance);
+        assert_eq!(app.mode, Mode::Normal);
+        assert_eq!(app.pending_kill, None);
     }
 }

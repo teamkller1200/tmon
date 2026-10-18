@@ -10,7 +10,9 @@ use std::{
 };
 
 use crossterm::{
-    event::{self, Event},
+    event::{
+        self, DisableMouseCapture, EnableMouseCapture, Event, MouseButton, MouseEventKind,
+    },
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
     ExecutableCommand,
 };
@@ -31,11 +33,15 @@ impl TerminalGuard {
     fn setup() -> io::Result<Self> {
         let mut stdout = io::stdout();
         stdout.execute(EnterAlternateScreen)?;
+        // マウスホイールとタブのクリックを受け取る。副作用としてターミナル自身の
+        // テキスト選択は Shift 併用になる。復元は restore() が必ず行う。
+        stdout.execute(EnableMouseCapture)?;
         Ok(Self { terminal: Terminal::new(CrosstermBackend::new(stdout))? })
     }
 
     fn restore() {
         let _ = disable_raw_mode();
+        let _ = io::stdout().execute(DisableMouseCapture);
         let _ = io::stdout().execute(LeaveAlternateScreen);
     }
 
@@ -55,15 +61,37 @@ impl Drop for TerminalGuard {
 /// 押しても確認プロンプトが描かれないまま kill されることはない。
 /// 終了要求は `App::should_quit` に出るので呼び出し側のループ条件が拾う。
 fn pump_keys(app: &mut app::App, budget: Duration) -> io::Result<Option<(u32, u64)>> {
-    if !event::poll(budget)? {
-        return Ok(None);
-    }
-    let Event::Key(key) = event::read()? else {
-        return Ok(None);
-    };
-    match app.on_key(key) {
-        app::Action::Kill(pid, start) => Ok(Some((pid, start))),
-        _ => Ok(None),
+    let deadline = Instant::now() + budget;
+    loop {
+        let now = Instant::now();
+        if now >= deadline || !event::poll(deadline - now)? {
+            return Ok(None);
+        }
+        let event = event::read()?;
+        // EnableMouseCapture はマウス移動も報告する（1003h）。状態を変えないイベントで
+        // 毎回描き直さないよう読み捨て、期限まで次の入力を待つ。
+        let actionable = match &event {
+            Event::Key(_) => true,
+            Event::Mouse(mouse) => matches!(
+                mouse.kind,
+                MouseEventKind::ScrollUp
+                    | MouseEventKind::ScrollDown
+                    | MouseEventKind::Down(MouseButton::Left)
+            ),
+            _ => false,
+        };
+        if !actionable {
+            continue;
+        }
+        let action = match event {
+            Event::Key(key) => app.on_key(key),
+            Event::Mouse(mouse) => app.on_mouse(mouse),
+            _ => app::Action::None,
+        };
+        return match action {
+            app::Action::Kill(pid, start) => Ok(Some((pid, start))),
+            _ => Ok(None),
+        };
     }
 }
 

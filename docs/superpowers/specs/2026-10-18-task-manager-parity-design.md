@@ -53,14 +53,19 @@
 
 ```
 loop {
-    if last_tick.elapsed() >= 1s {
+    let now = Instant::now();
+    if now >= next_sample {
         let m = sampler.sample();          // sysinfo + nvidia-smi を 1 回だけ
         app.on_tick(m);                    // metrics 差し替え + 履歴 push + 選択位置クランプ
-        last_tick = Instant::now();
+        next_sample = now + 1s;
     }
     terminal.draw(|f| ui::draw(f, &app))?;
-    // キーを 1 つ処理し、そのたびにループ先頭へ戻って再描画
+    // 次のサンプリング時刻まで待ち、キーまたはマウスを 1 つだけ処理する。
+    // 1 イベントごとにループ先頭へ戻るので、確認プロンプトは必ず描かれてから y が効く。
     // → Action::None | Quit | Kill(pid, start_secs)
+    if let Some((pid, start)) = pump_keys(&mut app, next_sample - now)? {
+        app.set_kill_result(pid, sampler.kill(pid, start));
+    }
 }
 ```
 
@@ -85,6 +90,7 @@ impl Drop for TerminalGuard {
     }
 }
 ```
+`setup()` は `EnterAlternateScreen` の次に `EnableMouseCapture`（ホイールとクリック用）、`restore()` は `disable_raw_mode()` → `DisableMouseCapture` → `LeaveAlternateScreen` の順で戻す。初期化の途中で失敗しても `restore()` を通す（raw mode とマウスキャプチャだけが残った状態を作らない）。
 
 ## 5. データモデル
 
@@ -273,7 +279,7 @@ kill 確認中（`x` 押下後。最下行が黄色 `Color::Yellow`）:
 | フィルタ入力中テキスト | `Color::Cyan` |
 ### 6.1 共通
 
-- 1 行目: タブ `Performance | Processes`（`Tabs` ウィジェット、選択中は反転）。右端に `[q] quit  [Tab] switch`。
+- 1 行目: タブ `Performance | Processes`（`Tabs` ウィジェット、選択中は反転。見出しの左クリックでも切り替わる）。右端に `[q] quit  [Tab] switch`。
 - 最下行: ステータス行（キーガイド、フィルタ入力、kill 結果メッセージ）。
 - ターミナルが小さい場合でも panic しない（`Constraint::Min(0)` と ratatui のクランプに任せる）。
 
@@ -297,6 +303,7 @@ kill 確認中（`x` 押下後。最下行が黄色 `Color::Yellow`）:
 
 - 列: `Name` (Min 20) / `PID` (7) / `CPU%` (7) / `MEM` (10) / `DISK R` (11) / `DISK W` (11)。
 - 行の選択は `TableState` + `Table::row_highlight_style(Style::default().bg(Color::DarkGray))`。`highlight_symbol` は使わない（列がずれるため）。`TableState` は描画時に `app.selected` から作る（ratatui が選択行が見えるようスクロール量を再計算する）。
+- マウスホイール（`ScrollUp` / `ScrollDown`）は選択を 3 行動かす（`SCROLL_LINES = 3`）。ビューだけを動かさないのは、ratatui の `Table` が選択行に追従してスクロールするため、見えていない行に `x` が効くのを避けるため。
 - フィルタ行: 通常時 `Filter: (none)  (/)`、入力中 `Filter: abc_`。
 - フッタ（Processes タブのみ。Performance タブは空）: `Filter: (none)   (/)    x kill    s sort cpu desc    r reverse    Tab switch    q quit`。末尾にステータスメッセージを追記し、色は §6.0 の表に従う。
 
@@ -334,6 +341,17 @@ kill 確認中（`x` 押下後。最下行が黄色 `Color::Yellow`）:
 | その他（`n` / `Esc` 含む） | 中止して Normal に戻る |
 
 確認プロンプトの文言: `Kill PID 1234 (chrome.exe)? [y/N]`。
+
+### 7.4 マウス
+
+| 操作 | 動作 |
+|---|---|
+| ホイール上下（Processes タブ） | 選択を 3 行上下（`SCROLL_LINES`） |
+| タブ見出しの左クリック（1 行目） | そのタブへ切替 |
+
+- ヒットテストを描画と一致させるため、`Tab::titles()` を `Tabs` ウィジェットと `Tab::hit` の両方で使う。桁は「左 pad 1 + タイトル + 右 pad 1 +（最後でなければ）区切り 1」で、区切りは左のタブに帰属させる（タブ境界に無反応の 1 桁を作らない）。
+- タブを切り替える前に `leave_modal()` で Filter / ConfirmKill を閉じる。確認プロンプトはフッタにしか出ないため、確認中にタブを移ると「見えない確認」に `y` で答えてしまう（§8.1 と同じ穴）。
+- `EnableMouseCapture` はマウス移動も報告する（crossterm は `?1003h` を送る）。移動イベントは状態を変えず読み捨て、再描画もしない。
 
 ## 8. kill の安全設計
 
@@ -378,4 +396,5 @@ kill 確認中（`x` 押下後。最下行が黄色 `Color::Yellow`）:
 - ディスクはボリューム単位の合計であり、物理ディスク別・プロセス別の内訳は出さない。
 - サンプリング周期は 1 秒固定。Windows タスクマネージャーより粗いため、短時間のスパイクは取り逃す。
 - `nvidia-smi` を 1 秒ごとに起動するため、プロセス起動コスト（数 ms〜数十 ms）が常時発生する。
-- CPU% の正規化は「全コア合計 / コア数」であり、タスクマネージャーの「CPU 時間 / 経過時間」とは計算式が異なるため厳密一致はしない。
+- CPU% の正規化は「全コア合計 / コア数」であり、タスクマネージャーの「CPU 時間 / 経過時間」とは計算式が異なるため厳密一致はしない。- マウスキャプチャを有効にするため、ターミナル標準のテキスト選択は Shift 併用になる。
+- マウスイベントを通知しないターミナル/多重化ではホイールとクリックが届かない（同じ操作はキーでもできる: j/k/PgDn/PgUp/Tab）。

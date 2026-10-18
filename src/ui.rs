@@ -236,7 +236,7 @@ pub fn draw(f: &mut ratatui::Frame<'_>, app: &App) {
 
     let header = Layout::horizontal([Constraint::Min(0), Constraint::Length(23)]).split(chunks[0]);
     f.render_widget(
-        Tabs::new(["Performance", "Processes"])
+        Tabs::new(Tab::titles())
             .select(app.tab as usize)
             .highlight_style(Style::default().add_modifier(Modifier::REVERSED)),
         header[0],
@@ -430,6 +430,24 @@ mod tests {
         let shot = snapshot(&app, 120, 30);
         assert!(shot.contains("Kill PID 1234"), "prompt missing:\n{shot}");
         assert!(shot.contains("[y/N]"), "prompt missing:\n{shot}");
+    }
+
+    /// `Tab::hit` の桁計算が実際の描画と一致することを、描いたヘッダから確認する。
+    #[test]
+    fn tab_hit_test_agrees_with_the_rendered_header() {
+        let shots = snapshot(&app_with_metrics(), 120, 20);
+        let header = shots.split('\n').next().unwrap();
+        // 区切りの `│` はマルチバイトなので、バイト位置ではなく文字数で桁を数える。
+        let column = |needle: &str| header[..header.find(needle).unwrap()].chars().count() as u16;
+
+        assert_eq!(Tab::hit(column("Performance")), Some(Tab::Performance));
+        assert_eq!(Tab::hit(column("Processes")), Some(Tab::Processes));
+        assert_eq!(
+            Tab::hit(column("Processes") - 2),
+            Some(Tab::Performance),
+            "見出しの間の区切りは左のタブ: {header:?}"
+        );
+        assert_eq!(Tab::hit(column("Processes") + 10), None, "見出しの右側は無効: {header:?}");
     }
 
     #[test]

@@ -922,10 +922,34 @@ git add -A && git commit -m "feat: add guarded process kill with confirmation"
 
 ---
 
+## Task 7: マウス対応（ホイールスクロール + タブクリック、2026-10-18 / commit 258cbf6 の後）
+
+要求: 「プロセスモニターをスクロールに対応させてください。また、タブをクリック可能にできますか？」
+
+調査結果: ratatui の `Table::render` は選択行が表示範囲外だと `state.offset` を再計算して選択行まで送る（`widgets/table/table.rs:882-883`）ため、キー操作（j/k/PgUp/PgDn）のスクロールは既に効いていた。不足していたのはホイールと、タブのクリック。
+
+| # | 変更 | ファイル |
+|---|---|---|
+| 1 | `Tab::ALL` / `Tab::titles()` / `Tab::hit(column)` を追加し、`Tabs::new(Tab::titles())` とヒットテストで同じ定義を使う | app.rs / ui.rs |
+| 2 | `App::on_mouse`（1 行目の左クリックでタブ切替、Processes タブのホイールで選択を `SCROLL_LINES = 3` 移動） | app.rs |
+| 3 | `App::leave_modal`（Filter / ConfirmKill を閉じる）を追加し、タブ切替の前に呼ぶ | app.rs |
+| 4 | `TerminalGuard` で `EnableMouseCapture` / `DisableMouseCapture` | main.rs |
+| 5 | `pump_keys` を deadline ループにし、`Moved` など状態を変えないイベントは読み捨てる（`?1003h` で移動が大量に届く）。有効なイベント 1 つで return | main.rs |
+
+設計判断:
+
+- ホイールは選択行を動かす。ビューだけを動かすと、見えていない行に `x` が効いてしまう（`Table` は選択に追従するので一覧の送られ方は同じ）。
+- タブクリックは 1 行目のみ。切替前に modal を閉じる（不可視の確認プロンプトに `y` で答える経路を塞ぐ）。
+- 区切りの `│` は左のタブのヒット領域に含める（タブ境界に無反応の 1 桁を作らない）。
+
+検証（2026-10-18）: `cargo test` **40 passed**、`cargo clippy --all-targets -- -D warnings` 警告なし。追加テスト: `tab_hit_test_matches_the_rendered_titles` / `click_on_a_tab_header_switches_tabs` / `wheel_scrolls_the_process_selection` / `wheel_is_ignored_on_the_performance_tab` / `clicking_a_tab_cancels_a_pending_kill`（app.rs）、`tab_hit_test_agrees_with_the_rendered_header`（ui.rs。描画したヘッダの桁と `Tab::hit` を突き合わせる）。
+
+---
+
 ## 完了条件
 
-1. `cargo test` が全て PASS する。（34 passed を確認）
+1. `cargo test` が全て PASS する。（40 passed を確認）
 2. `cargo clippy -- -D warnings` が警告なしで通る。（`--all-targets` で確認）
-3. `cargo run` でパフォーマンスタブとプロセスタブが動作し、`q` で終了後に端末が正常状態に戻る。（TTY が無く未検証）
+3. `cargo run` でパフォーマンスタブとプロセスタブが動作し、`q` で終了後に端末が正常状態に戻る。（TTY が無く未検証。マウスのホイールとタブクリックも同様に未検証）
 4. spec の §2.1 の 3 項目（パフォーマンスグラフ / プロセス一覧 / kill）が手動確認できる。（TTY が無く未検証）
 5. 実装しないもの（spec §2.2）を追加していない。
