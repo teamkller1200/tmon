@@ -43,7 +43,7 @@
 | `src/main.rs` | 端末初期化と復元の RAII ガード、イベントループ、1 秒 tick、キー入力の配送 | `TerminalGuard`, `fn main()` |
 | `src/gpu.rs` | GPU 計測（既存コードの移設）。nvidia-smi 実行 | `GpuStats`, `read_gpu_stats() -> Option<GpuStats>`, `power_percent() -> u32`, `gpu_util_string() -> String`, `vram_string(u32, u32) -> String` |
 | `src/metrics.rs` | sysinfo の所有とサンプリング。全体/プロセスの計測値 | `Sampler`, `Metrics`, `ProcessRow`, `KillOutcome`, `rate_per_sec()`, `is_loopback_name()`, `kill_blocked_reason()` |
-| `src/app.rs` | UI 状態、履歴リングバッファ、ソート/フィルタ、キー→アクション変換 | `App`, `Tab`, `SortKey`, `Mode`, `Action`, `History`, `HISTORY_LEN`, `filter_matches()`, `sort_rows()` |
+| `src/app.rs` | UI 状態、履歴リングバッファ、ソート/フィルタ、キー→アクション変換 | `App`, `Tab`, `SortKey`, `Mode`, `StatusKind`, `Action`, `History`, `HISTORY_LEN`, `filter_matches()`, `sort_rows()` |
 | `src/format.rs` | 表示用フォーマット（純関数） | `bar_string()`, `bytes()`, `rate()`, `percent()` |
 | `src/ui.rs` | 描画のみ。状態を持たない | `draw(&mut Frame, &App)`。内部ヘルパー `panel_block` / `spark` / `metric_panel` / `performance_tab` / `processes_tab` は非公開。テスト専用の `snapshot(&App, u16, u16) -> String` は `#[cfg(test)]` |
 
@@ -59,7 +59,8 @@ loop {
         last_tick = Instant::now();
     }
     terminal.draw(|f| ui::draw(f, &app))?;
-    // 50ms ポーリングでキー処理 → Action::None | Quit | Kill(pid)
+    // キーを 1 つ処理し、そのたびにループ先頭へ戻って再描画
+    // → Action::None | Quit | Kill(pid, start_secs)
 }
 ```
 
@@ -114,7 +115,7 @@ pub struct ProcessRow {
     pub disk_write_bps: u64,
 }
 
-pub enum KillOutcome { Killed, NotFound, Failed }
+pub enum KillOutcome { Killed, NotFound, Failed, Replaced }
 ```
 
 ### 5.2 Sampling（SysinfoSampler の内部方針）
@@ -131,18 +132,19 @@ pub struct Sampler {
 impl Sampler {
     pub fn new() -> Self;
     pub fn sample(&mut self) -> Metrics;
-    pub fn kill(&mut self, pid: u32) -> KillOutcome;
+    pub fn kill(&mut self, pid: u32, expected_start: u64) -> KillOutcome;
 }
 ```
 
-- `Sampler::new()`: `System::new_all()` / `Disks::new_with_refreshed_list()` / `Networks::new_with_refreshed_list()`。CPU% とプロセス CPU% は 2 回の refresh の差分で算出されるため、`MINIMUM_CPU_UPDATE_INTERVAL` だけ `sleep` してから `refresh_all()` で基点を作る（起動時に 1 回だけ、約 200ms）。
+- `Sampler::new()`: `System::new_all()` で CPU の基点を作る（`MINIMUM_CPU_UPDATE_INTERVAL` だけ `sleep` してから `refresh_all()`。起動時に 1 回だけ約 200ms）。ディスク/ネットワークの基点（`Disks::new_with_refreshed_list()` / `Networks::new_with_refreshed_list()` と累積値の初期値）は `sleep` の後に取る（待機中の通信を初回レートに混ぜないため）。
 - `sample()`:
   - `sys.refresh_cpu_all()`（コア別含む）、`sys.refresh_memory()`、`sys.refresh_processes(ProcessesToUpdate::All, true)`、`disks.refresh(true)`、`networks.refresh(true)`。
-  - 経過秒は `prev_at.elapsed().as_secs_f64()`。
-  - ディスク/ネットワークは累積値の差（`saturating_sub`）を経過秒で割る。
+  - 経過秒は「前回の計測開始から今回の計測開始まで」。`sample()` の先頭で `Instant::now()` を取り、そこで `prev_at` も更新する（末尾で取ると `read_gpu_stats()` の所要時間が分母から抜けて速度が過大になる）。
+  - ディスクは累積値（`DiskUsage::total_read_bytes` / `total_written_bytes`）の差（`saturating_sub`）を経過秒で割る。
+  - ネットワークは `NetworkData::received()` / `transmitted()`（前回 refresh 以降の差分）を、ループバックを除いた interface について合計し、経過秒で割る。`total_received()` / `total_transmitted()` は累積値なので速度には使えない。
   - プロセスのディスクは `DiskUsage::read_bytes` / `written_bytes`（前回 refresh からの差分）を経過秒で割る。
   - `gpu::read_gpu_stats()` を 1 回だけ呼ぶ。
-- CPU%: `cpu.cpu_usage()` はマルチコアで 100 を超えるため、`sys.cpus().len().max(1)` で割って 0..100 に正規化する（`sysinfo` のドキュメント通り）。
+- CPU%: 全体は `System::global_cpu_usage()` が Windows では `100 - \Processor(_Total)\% Idle Time` で既に 0..100 なので、そのまま `clamp(0.0, 100.0)` する（コア数で割ってはいけない。割ると 16 コアで 1/16 の過小表示になる）。プロセスの `Process::cpu_usage()` は `100 * (delta_user + delta_sys) / period * コア数` で 1 コア全負荷が 100 になるため、`sys.cpus().len().max(1)` で割って 0..100 に正規化する（Windows タスクマネージャーと同じ意味）。
 - プロセス名は `p.name().to_string_lossy().into_owned()`。
 
 ### 5.3 純関数（テスト対象）
@@ -267,7 +269,7 @@ kill 確認中（`x` 押下後。最下行が黄色 `Color::Yellow`）:
 | プロセス一覧の選択行 | 背景 `Color::DarkGray` |
 | プロセステーブルのヘッダ行 | `Modifier::BOLD` |
 | kill 確認プロンプト | `Color::Yellow` |
-| kill 成功 / 失敗 / 見つからない | `Color::Green` / `Color::Red` / `Color::Yellow` |
+| kill 成功 / 失敗 / 見つからない・PID 再利用のため中止 | `Color::Green` / `Color::Red` / `Color::Yellow` |
 | フィルタ入力中テキスト | `Color::Cyan` |
 ### 6.1 共通
 
@@ -296,7 +298,7 @@ kill 確認中（`x` 押下後。最下行が黄色 `Color::Yellow`）:
 - 列: `Name` (Min 20) / `PID` (7) / `CPU%` (7) / `MEM` (10) / `DISK R` (11) / `DISK W` (11)。
 - 行の選択は `TableState` + `Table::row_highlight_style(Style::default().bg(Color::DarkGray))`。`highlight_symbol` は使わない（列がずれるため）。`TableState` は描画時に `app.selected` から作る（ratatui が選択行が見えるようスクロール量を再計算する）。
 - フィルタ行: 通常時 `Filter: (none)  (/)`、入力中 `Filter: abc_`。
-- フッタ: `x kill  s sort  r reverse  / filter  Tab switch  q quit` とステータスメッセージ。
+- フッタ（Processes タブのみ。Performance タブは空）: `Filter: (none)   (/)    x kill    s sort cpu desc    r reverse    Tab switch    q quit`。末尾にステータスメッセージを追記し、色は §6.0 の表に従う。
 
 ## 7. キーバインド
 
@@ -312,7 +314,7 @@ kill 確認中（`x` 押下後。最下行が黄色 `Color::Yellow`）:
 | `s` | ソート列を巡回（Name -> Pid -> Cpu -> Memory -> Disk -> Name）。切替時は降順にリセット |
 | `r` | 昇順/降順を反転 |
 | `/` | フィルタ入力モードへ |
-| `x` | 選択プロセスの kill 確認へ（保護対象なら理由をステータスに表示） |
+| `x` | 選択プロセスの kill 確認へ（Processes タブのみ。保護対象なら理由をステータスに表示） |
 
 初期値: ソート `SortKey::Cpu` 降順（Windows タスクマネージャーと同じ）、選択 0、タブ `Performance`。
 
@@ -328,23 +330,26 @@ kill 確認中（`x` 押下後。最下行が黄色 `Color::Yellow`）:
 
 | キー | 動作 |
 |---|---|
-| `y` / `Y` | kill を実行（`Action::Kill(pid)`）、結果をステータスに表示 |
+| `y` / `Y` | kill を実行（`Action::Kill(pid, start_secs)`）、結果をステータスに表示 |
 | その他（`n` / `Esc` 含む） | 中止して Normal に戻る |
 
 確認プロンプトの文言: `Kill PID 1234 (chrome.exe)? [y/N]`。
 
 ## 8. kill の安全設計
 
-1. `x` 押下時、まず `kill_blocked_reason(pid, get_current_pid().ok().map(Pid::as_u32))` で拒否判定。拒否なら確認を出さずステータスに理由を表示する（PID 0 / PID 4 / 自分自身）。
-2. 確認プロンプトで `y` を押した場合のみ `Sampler::kill(pid)` を呼ぶ。
-3. `KillOutcome::{Killed, NotFound, Failed}` をステータスに表示する（`Failed` は権限不足などを含む）。
-4. テストから実プロセスを kill しない。判定（1）と結果変換（3）は純関数と `KillOutcome` の値で検証し、実際の kill は手動確認に回す。
+1. `x` は Processes タブでのみ受け付ける（Performance タブにはフッタが無く、確認プロンプトが見えないまま kill できてしまうため）。`request_kill()` の先頭でタブを判定して return する。
+2. 選択行に対し `kill_blocked_reason(pid, get_current_pid().ok().map(Pid::as_u32))` で拒否判定。拒否なら確認を出さずステータスに理由を表示する（PID 0 / PID 4 / 自分自身）。
+3. 確認プロンプトで `y` を押した場合のみ `Sampler::kill(pid, expected_start)` を呼ぶ。`expected_start` は確認を出した時点の `Process::start_time()` で、選択 index ではなく PID と一緒に保持する（確認中に一覧が並び替わっても対象がずれない）。
+4. `Sampler::kill` は直前にプロセスを再取得し、`start_time()` が `expected_start` と異なれば `KillOutcome::Replaced` を返して kill しない（Windows の kill は PID 指定の `taskkill` なので、PID 再利用で別プロセスを終了しうるため）。
+5. `KillOutcome::{Killed, Replaced, NotFound, Failed}` をステータスに表示する（成功=Green / 警告=Yellow / 失敗=Red。`Failed` は権限不足などを含む）。
+6. テストから実プロセスを kill しない。判定（2）（3）と結果変換（5）は純関数と `KillOutcome` の値で検証し、実際の kill は手動確認に回す。
 
 ## 9. エラー処理
 
 | 事象 | 挙動 |
 |---|---|
 | panic / `?` による早期 return | `TerminalGuard::drop` が raw mode と代替画面を復元する |
+| `enable_raw_mode()` の後で初期化に失敗 | `TerminalGuard::new` が `inspect_err` で `restore()` を呼んでから返す（この時点ではまだ Drop が無いため） |
 | nvidia-smi 不在・失敗 | `gpu: None` → `GPU unavailable` 表示。アプリは継続 |
 | 経過秒 0 / カウンタ巻き戻り | `rate_per_sec` が 0 を返す。`saturating_sub` で underflow させない |
 | プロセスが消えた | `sample()` の `ProcessesToUpdate::All, true` で除去。`selected` は `visible().len()-1` にクランプ |

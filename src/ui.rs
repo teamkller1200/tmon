@@ -1,4 +1,4 @@
-use crate::app::{App, History, Mode, SortKey, Tab};
+use crate::app::{App, History, Mode, SortKey, StatusKind, Tab};
 use crate::format::{bar_string, bytes, percent, rate};
 use crate::gpu::{gpu_util_string, vram_string};
 use ratatui::{
@@ -255,10 +255,18 @@ pub fn draw(f: &mut ratatui::Frame<'_>, app: &App) {
 
     let style = if app.mode == Mode::ConfirmKill {
         Style::default().fg(Color::Yellow)
-    } else if app.status.is_some() {
-        Style::default().fg(Color::LightYellow)
-    } else {
+    } else if app.mode == Mode::Filter {
+        Style::default().fg(Color::Cyan)
+    } else if app.status.is_none() {
         Style::default().fg(Color::DarkGray)
+    } else {
+        // spec §6.0: kill の結果は 成功=Green / 警告=Yellow / 失敗=Red。
+        match app.status_kind {
+            StatusKind::Ok => Style::default().fg(Color::Green),
+            StatusKind::Warn => Style::default().fg(Color::Yellow),
+            StatusKind::Err => Style::default().fg(Color::Red),
+            StatusKind::Info => Style::default().fg(Color::DarkGray),
+        }
     };
     f.render_widget(Paragraph::new(footer_text(app)).style(style), chunks[2]);
 }
@@ -288,7 +296,7 @@ pub fn snapshot(app: &App, width: u16, height: u16) -> String {
 mod tests {
     use super::*;
     use crate::app::App;
-    use crate::metrics::{Metrics, ProcessRow};
+    use crate::metrics::{KillOutcome, Metrics, ProcessRow};
     use ratatui::backend::TestBackend;
 
     fn sample_gpu() -> crate::gpu::GpuStats {
@@ -422,6 +430,22 @@ mod tests {
         let shot = snapshot(&app, 120, 30);
         assert!(shot.contains("Kill PID 1234"), "prompt missing:\n{shot}");
         assert!(shot.contains("[y/N]"), "prompt missing:\n{shot}");
+    }
+
+    #[test]
+    fn kill_result_footer_is_colored_by_kind() {
+        let mut app = app_with_processes(&[("a", 1, 1.0)]);
+        app.tab = Tab::Processes;
+        app.set_kill_result(1, KillOutcome::Killed);
+        let mut terminal = ratatui::Terminal::new(TestBackend::new(100, 20)).unwrap();
+        terminal.draw(|f| draw(f, &app)).unwrap();
+        let buffer = terminal.backend().buffer();
+
+        // フッタは最下行。成功は Green / 警告は Yellow / 失敗は Red。
+        assert_eq!(buffer[(0, 19)].style().fg, Some(Color::Green));
+        app.set_kill_result(1, KillOutcome::Failed);
+        terminal.draw(|f| draw(f, &app)).unwrap();
+        assert_eq!(terminal.backend().buffer()[(0, 19)].style().fg, Some(Color::Red));
     }
 
     #[test]

@@ -51,7 +51,7 @@ spec の §10.1 より。いずれもテストが無いと壊れる入力なの�
   - `ui::draw(f: &mut ratatui::Frame<'_>, app: &App)`, `ui::snapshot(app: &App, width: u16, height: u16) -> String`
   - `main::TerminalGuard`（`Drop` で `disable_raw_mode()` と `LeaveAlternateScreen`）
 
-- [ ] **Step 1: git リポジトリを初期化する**
+- [x] **Step 1: git リポジトリを初期化する**
 
 `git log` は `fatal: not a git repository` を返す（このプロジェクトは未管理）。タスク単位のコミットを取るため、まず初期化する。
 
@@ -63,21 +63,21 @@ git add -A
 git commit -m "chore: initial import of tui-gpumonitor"
 ```
 
-- [ ] **Step 2: `src/format.rs` を作り `bar_string` を移設する**
+- [x] **Step 2: `src/format.rs` を作り `bar_string` を移設する**
 
 `src/main.rs:74-79` の `bar_string` をそのまま移す。`src/main.rs` に `mod format;` を追加し、呼び出しを `format::bar_string` に置換する。既存テスト `bar_string_scales_correctly`（`src/main.rs:225-231`）も `format.rs` の `#[cfg(test)] mod tests` へ移す。
 
 Run: `cargo test bar_string_scales_correctly -v`
 Expected: PASS（`format::tests::bar_string_scales_correctly`）
 
-- [ ] **Step 3: `src/gpu.rs` を作り GPU 計測を移設する**
+- [x] **Step 3: `src/gpu.rs` を作り GPU 計測を移設する**
 
 `GpuStats` / `read_gpu_stats` / `power_percent` / `gpu_util_string` / `vram_string`（`src/main.rs:20-89`）とテスト `power_percent_is_normalized_to_limit`（`src/main.rs:232-246`）を移す。ロジックは変更しない。
 
 Run: `cargo test power_percent_is_normalized_to_limit -v`
 Expected: PASS（`gpu::tests::power_percent_is_normalized_to_limit`）
 
-- [ ] **Step 4: `src/app.rs` を作る（この時点では GPU 表示と `q` だけ）**
+- [x] **Step 4: `src/app.rs` を作る（この時点では GPU 表示と `q` だけ）**
 
 ```rust
 use crate::gpu::GpuStats;
@@ -108,7 +108,7 @@ impl App {
 }
 ```
 
-- [ ] **Step 5: `src/ui.rs` を作り描画を移設する**
+- [x] **Step 5: `src/ui.rs` を作り描画を移設する**
 
 `render_dashboard`（`src/main.rs:91-156`）を `ui.rs` の private 関数として移す。`frame_count: usize` 引数は `app.frame_count` から取るため削除する。`ui::draw(f, app)` は次の構成にする。
 
@@ -146,7 +146,7 @@ fn snapshot_has_exact_height() {
 }
 ```
 
-- [ ] **Step 6: `src/main.rs` を `TerminalGuard` とイベントループだけにする**
+- [x] **Step 6: `src/main.rs` を `TerminalGuard` とイベントループだけにする**
 
 ```rust
 mod app; mod format; mod gpu; mod ui;
@@ -197,7 +197,7 @@ while !app.should_quit {
 }
 ```
 
-- [ ] **Step 7: テストとビルドを通す**
+- [x] **Step 7: テストとビルドを通す**
 
 Run: `cargo test`
 Expected: コンパイル成功。`format::tests::bar_string_scales_correctly`, `gpu::tests::power_percent_is_normalized_to_limit`, `ui::tests::dashboard_respects_terminal_size`, `ui::tests::snapshot_has_exact_height` の 4 件が PASS。
@@ -205,12 +205,12 @@ Expected: コンパイル成功。`format::tests::bar_string_scales_correctly`, 
 Run: `cargo clippy -- -D warnings`（未使用 import の検出）
 Expected: warning なし。root に残った未使用 `use` を削除する。
 
-- [ ] **Step 8: 手動確認**
+- [ ] **Step 8: 手動確認**（TTY が必要。この環境では未検証のまま。実装は Task 1 で完了）
 
 Run: `cargo run`
 Expected: 分割前と同じ GPU ダッシュボードが表示され、`q` で終了する。終了後に `echo test` が正常表示される（raw mode が残っていない）。`Ctrl+C` で中断しても同様に端末が壊れない（`TerminalGuard::drop` が走る）。
 
-- [ ] **Step 9: コミット**
+- [x] **Step 9: コミット**
 
 ```bash
 git add -A && git commit -m "refactor: split main.rs into modules and guard terminal restore"
@@ -235,7 +235,7 @@ git add -A && git commit -m "refactor: split main.rs into modules and guard term
   - `metrics::rate_per_sec(delta_bytes: u64, elapsed_secs: f64) -> u64`
   - `metrics::is_loopback_name(name: &str) -> bool`
 
-- [ ] **Step 1: sysinfo を追加してビルドする**
+- [x] **Step 1: sysinfo を追加してビルドする**
 
 ```bash
 cd C:/Users/syu12/programming/tui-gpumonitor
@@ -247,7 +247,7 @@ cargo build
 
 Run: `cargo doc -p sysinfo --no-deps` は不要。`cargo build` が成功すればよい。
 
-- [ ] **Step 2: 失敗するテストを書く（純関数）**
+- [x] **Step 2: 失敗するテストを書く（純関数）**
 
 `src/metrics.rs` に `#[cfg(test)] mod tests` を書き、`mod metrics;` を `src/main.rs` に追加する。この時点ではコンパイルエラー（未定義）で FAIL する。
 
@@ -273,7 +273,7 @@ fn is_loopback_name_matches_case_insensitively() {
 Run: `cargo test metrics:: -v`
 Expected: FAIL（`cannot find function rate_per_sec` など）
 
-- [ ] **Step 3: 純関数と `Sampler` を実装する**
+- [x] **Step 3: 純関数と `Sampler` を実装する**
 
 ```rust
 pub fn rate_per_sec(delta_bytes: u64, elapsed_secs: f64) -> u64 {
@@ -304,7 +304,7 @@ pub fn is_loopback_name(name: &str) -> bool {
 
 `Sampler::kill(pid)` は `Pid::from_u32(pid)` で `sys.process()` を引き、見つからなければ `refresh_processes(ProcessesToUpdate::Some(&[pid]), true)` で 1 回だけ再取得してから判定する。`Some(p)` かつ `p.kill()` が `true` なら `Killed`、`false` なら `Failed`、`None` なら `NotFound`。
 
-- [ ] **Step 4: スモークテストを追加する**
+- [x] **Step 4: スモークテストを追加する**
 
 ```rust
 #[test]
@@ -324,7 +324,7 @@ fn sampler_smoke() {
 Run: `cargo test metrics:: -v`
 Expected: `rate_per_sec_handles_zero_elapsed`, `is_loopback_name_matches_case_insensitively`, `sampler_smoke` が PASS。
 
-- [ ] **Step 5: コミット**
+- [x] **Step 5: コミット**
 
 ```bash
 git add -A && git commit -m "feat: add sysinfo-based sampler for cpu, memory, disk and network"
@@ -349,7 +349,7 @@ git add -A && git commit -m "feat: add sysinfo-based sampler for cpu, memory, di
   - `format::bytes(u64) -> String`, `format::rate(u64) -> String`, `format::percent(f32) -> String`
   - `ui::draw` 内の `performance_tab(f, area, app)`
 
-- [ ] **Step 1: 失敗するテストを書く（`format` の追加関数）**
+- [x] **Step 1: 失敗するテストを書く（`format` の追加関数）**
 
 ```rust
 #[test]
@@ -378,11 +378,11 @@ fn percent_has_one_decimal() {
 Run: `cargo test format:: -v`
 Expected: FAIL（`cannot find function bytes`）
 
-- [ ] **Step 2: `format` の 3 関数を実装する**
+- [x] **Step 2: `format` の 3 関数を実装する**
 
 `bytes` は 1024 進で `B/KB/MB/GB/TB` を選び、`B` 以外は小数 1 桁（`format!("{:.1} {}", v, unit)`）。`rate` は `format!("{}/s", bytes(bps))`。`percent` は `format!("{:.1}%", v)`。
 
-- [ ] **Step 3: 失敗するテストを書く（`app` の履歴と tick）**
+- [x] **Step 3: 失敗するテストを書く（`app` の履歴と tick）**
 
 ```rust
 #[test]
@@ -408,11 +408,11 @@ fn on_tick_stores_metrics_and_pushes_history() {
 Run: `cargo test app:: -v`
 Expected: FAIL（`no method named on_tick` / `cannot find type History`）
 
-- [ ] **Step 4: `app` に履歴と tick を実装する**
+- [x] **Step 4: `app` に履歴と tick を実装する**
 
 `History` は `VecDeque<u64>` を持ち、`push` で `HISTORY_LEN` を超えたら `pop_front()` する。`on_tick` は `hist_cpu.push(metrics.cpu_total.round() as u64)`、`hist_mem.push(mem_percent)`（`mem_total == 0` なら 0）、`hist_disk.push((disk_read_bps + disk_write_bps) / 1024)`、`hist_net.push((net_rx_bps + net_tx_bps) / 1024)`、`hist_gpu.push(gpu.as_ref().map(|g| g.gpu_util).unwrap_or(0) as u64)` を行い、`self.metrics = metrics; self.frame_count += 1;` する。
 
-- [ ] **Step 5: `ui.rs` にタブヘッダとパフォーマンスタブを実装する**
+- [x] **Step 5: `ui.rs` にタブヘッダとパフォーマンスタブを実装する**
 
 `draw` の先頭で `Tabs::new(["Performance", "Processes"]).select(app.tab as usize).highlight_style(Style::default().add_modifier(Modifier::REVERSED))` を 1 行高の領域に描く。残り領域は `match app.tab { Tab::Performance => performance_tab(f, area, app), Tab::Processes => performance_tab(f, area, app) }` とする（`Tab::Processes` の腕は Task 4 で `processes_tab(f, area, app)` に差し替える）。
 
@@ -433,7 +433,7 @@ Expected: FAIL（`no method named on_tick` / `cannot find type History`）
 
 GPU 不在時の表示は既存文言 `GPU unavailable` / `NVIDIA-SMI missing or unsupported GPU` をそのまま使う。
 
-- [ ] **Step 6: スナップショットテストを追加する**
+- [x] **Step 6: スナップショットテストを追加する**
 
 ```rust
 fn app_with_metrics() -> App {
@@ -477,7 +477,7 @@ fn gpu_panel_falls_back_when_unavailable() {
 Run: `cargo test ui:: -v`
 Expected: 4 件（既存 2 + 新規 3 のうち該当分）が PASS。
 
-- [ ] **Step 7: `main.rs` を計測付きループにする**
+- [x] **Step 7: `main.rs` を計測付きループにする**
 
 `let mut sampler = metrics::Sampler::new();` を作り、1 秒 tick で `app.on_tick(sampler.sample())` を呼ぶ。`Sampler::new()` は約 200ms ブロックするため、ループ開始前に 1 度だけ呼ぶ。
 
@@ -486,7 +486,7 @@ Expected: 4 件（既存 2 + 新規 3 のうち該当分）が PASS。
 // 専用スレッド + mpsc::Receiver<Metrics> に移す（Sampler は Send なので移設のみで済む）
 ```
 
-- [ ] **Step 8: 検証してコミット**
+- [x] **Step 8: 検証してコミット**
 
 Run: `cargo test`
 Expected: 全 PASS。
@@ -518,7 +518,7 @@ git add -A && git commit -m "feat: add performance tab with per-metric history s
   - `app::sort_rows(rows: &mut [ProcessRow], key: SortKey, desc: bool)`
   - `ui::draw` 内の `processes_tab(f, area, app)`
 
-- [ ] **Step 1: 失敗するテストを書く（純関数）**
+- [x] **Step 1: 失敗するテストを書く（純関数）**
 
 ```rust
 fn row(pid: u32, name: &str, cpu: f32) -> ProcessRow {
@@ -552,7 +552,7 @@ fn sort_rows_by_name_ascending() {
 Run: `cargo test app:: -v`
 Expected: FAIL（`cannot find function filter_matches`）
 
-- [ ] **Step 2: 純関数と `App` のプロセス状態を実装する**
+- [x] **Step 2: 純関数と `App` のプロセス状態を実装する**
 
 `filter_matches` は `let f = filter.trim().to_ascii_lowercase();` が空なら `true`、そうでなければ `name.to_ascii_lowercase().contains(&f) || pid.to_string().starts_with(&f)`。
 
@@ -565,7 +565,7 @@ Expected: FAIL（`cannot find function filter_matches`）
 // 数千プロセスで気になったら &[ProcessRow] + インデックス配列に変える。
 ```
 
-- [ ] **Step 3: 失敗するテストを書く（選択とキー操作）**
+- [x] **Step 3: 失敗するテストを書く（選択とキー操作）**
 
 ```rust
 fn key(code: KeyCode) -> KeyEvent {
@@ -638,7 +638,7 @@ fn navigation_and_quit_actions() {
 Run: `cargo test app:: -v`
 Expected: FAIL（`no variant named Filter` など）
 
-- [ ] **Step 4: `App::on_key` とモードを実装する**
+- [x] **Step 4: `App::on_key` とモードを実装する**
 
 `on_key` は `KeyEventKind::Press` 以外を無視し、`Mode` ごとに分岐する。
 
@@ -659,7 +659,7 @@ Expected: FAIL（`no variant named Filter` など）
 
 `on_tick` の末尾で `self.selected = self.selected.min(self.visible().len().saturating_sub(1));` を行う（空一覧なら `visible().len()` が 0 になり `selected` は 0 になるが、`selected_pid()` は `visible().get(self.selected)` 経由なので `None` を返す）。
 
-- [ ] **Step 5: `ui.rs` にプロセスタブを実装する**
+- [x] **Step 5: `ui.rs` にプロセスタブを実装する**
 
 列は `[Constraint::Min(20), Constraint::Length(7), Constraint::Length(7), Constraint::Length(10), Constraint::Length(11), Constraint::Length(11)]`、ヘッダは `Name / PID / CPU% / MEM / DISK R / DISK W`。セルは `format::percent(p.cpu)`、`format::bytes(p.memory)`、`format::rate(p.disk_read_bps)`、`format::rate(p.disk_write_bps)`。
 
@@ -678,7 +678,7 @@ f.render_stateful_widget(table, area, &mut state);
 
 フッタ行: 通常時 `Filter: (none)  (/)   x kill  s sort  r reverse  Tab switch  q quit`、`Mode::Filter` なら `Filter: {filter}_`、`status` があればそれを右側に表示する。
 
-- [ ] **Step 6: スナップショットテストを追加する**
+- [x] **Step 6: スナップショットテストを追加する**
 
 ```rust
 #[test]
@@ -711,11 +711,11 @@ fn processes_snapshot_at_tiny_size_does_not_panic() {
 Run: `cargo test ui:: -v`
 Expected: 全 PASS。
 
-- [ ] **Step 7: `main.rs` で `Action` を処理する**
+- [x] **Step 7: `main.rs` で `Action` を処理する**
 
 `if let Some(key) = ... { match app.on_key(key) { Action::None => {}, Action::Quit => {}, Action::Kill(_) => {} /* Task 5 で実装 */ } }` の形にする（`should_quit` は `App` が持つので `Quit` は何もしなくてよい）。
 
-- [ ] **Step 8: 検証してコミット**
+- [x] **Step 8: 検証してコミット**
 
 Run: `cargo test`
 Expected: 全 PASS。
@@ -744,7 +744,7 @@ git add -A && git commit -m "feat: add sortable and filterable process list"
   - `metrics::own_pid() -> Option<u32>`（`sysinfo::get_current_pid().ok().map(|p| p.as_u32())`）
   - `App::request_kill(&mut self, own_pid: Option<u32>)`（`x` から呼ぶ。保護対象なら `status` に理由を入れて確認を出さない）
 
-- [ ] **Step 1: 失敗するテストを書く（保護判定）**
+- [x] **Step 1: 失敗するテストを書く（保護判定）**
 
 ```rust
 #[test]
@@ -760,7 +760,7 @@ fn kill_blocked_reason_protects_system_and_self() {
 Run: `cargo test metrics::kill_blocked_reason -v`
 Expected: FAIL（`cannot find function kill_blocked_reason`）
 
-- [ ] **Step 2: 実装する**
+- [x] **Step 2: 実装する**
 
 ```rust
 pub fn kill_blocked_reason(pid: u32, own_pid: Option<u32>) -> Option<&'static str> {
@@ -773,7 +773,7 @@ pub fn kill_blocked_reason(pid: u32, own_pid: Option<u32>) -> Option<&'static st
 }
 ```
 
-- [ ] **Step 3: 失敗するテストを書く（確認フロー）**
+- [x] **Step 3: 失敗するテストを書く（確認フロー）**
 
 ```rust
 #[test]
@@ -815,7 +815,7 @@ fn quit_key_is_ignored_while_confirming() {
 Run: `cargo test app::kill -v`
 Expected: FAIL（`no method named request_kill`）
 
-- [ ] **Step 4: `App` に kill フローを実装する**
+- [x] **Step 4: `App` に kill フローを実装する**
 
 `request_kill(own_pid)` は次の順で書く。
 
@@ -835,7 +835,7 @@ self.mode = Mode::ConfirmKill;
 
 `Normal` モードの `x` は `self.request_kill(crate::metrics::own_pid())` を呼ぶ。`metrics` に `pub fn own_pid() -> Option<u32>` を追加し、`sysinfo::get_current_pid().ok().map(|p| p.as_u32())` を返す（`get_current_pid` は cargo feature `system` で利用可能）。
 
-- [ ] **Step 5: `ui.rs` に確認プロンプトを表示する**
+- [x] **Step 5: `ui.rs` に確認プロンプトを表示する**
 
 フッタ行の描画で `Mode::ConfirmKill` のとき `format!("Kill PID {} ({})? [y/N]", pid, name)` を黄色（`Color::Yellow`）で表示し、他のキーガイドは隠す。
 
@@ -854,17 +854,25 @@ fn confirm_prompt_is_shown() {
 Run: `cargo test ui:: -v`
 Expected: PASS。
 
-- [ ] **Step 6: `main.rs` で `Action::Kill` を実行する**
+- [x] **Step 6: `main.rs` で `Action::Kill` を実行する**
 
 ```rust
 match app.on_key(key) {
-    app::Action::Kill(pid) => {
-        let outcome = sampler.kill(pid);
+    app::Action::Kill(pid, start_secs) => {
+        let outcome = sampler.kill(pid, start_secs);
         app.set_kill_result(pid, outcome);
     }
     _ => {}
 }
 ```
+
+追加事項（エラー処理の実装中に判明した問題への対処。spec §8 と Task 6 を参照）:
+
+- `Action::Kill` は PID だけでなく、確認を出した時点の `Process::start_time()` も運ぶ（PID 再利用の検出）。
+- `pump_keys` は 1 回の呼び出しでキーを 1 つだけ処理し、処理のたびに呼び出し側が再描画する（1 秒分まとめて処理すると、確認プロンプトが描画されないまま kill できてしまう）。
+- `x` は Performance タブでは無視する（フッタが無く確認が見えないため）。
+- `KillOutcome::Replaced`（PID 再利用）も `set_kill_result` で扱い、`StatusKind`（Ok / Warn / Err）を設定して ui がフッタ色を決める。
+- `kill_result_updates_status` は `Killed` / `NotFound` / `Failed` / `Replaced` の 4 通りを見る。
 
 `App::set_kill_result(&mut self, pid: u32, outcome: KillOutcome) -> ()` は `Sampler::kill` の戻り値を `status` 用の文言に変換する（`Killed` / `NotFound` / `Failed` の 3 通り。`Failed` には権限不足が含まれる）。文言は下のテストの `assert_eq!` の文字列に一致させる。
 
@@ -881,12 +889,12 @@ fn kill_result_updates_status() {
 }
 ```
 
-- [ ] **Step 7: 手動確認（テストからは実プロセスを kill しない）**
+- [ ] **Step 7: 手動確認（テストからは実プロセスを kill しない）**（TTY が必要。この環境では未検証のまま。実装は Task 5 で完了）
 
 Run: `cargo run` の後、`Tab` でプロセスタブへ移動し、`notepad.exe` を起動しておいて選択して `x` → `y`。
 Expected: `killed PID <n>` がフッタに表示され、次の tick で一覧から消える。`System` (PID 4) で `x` を押した場合は確認が出ず `PID 4 (System) cannot be killed` が表示される。管理者権限の無いプロセスで `Failed` が出ることも確認する（権限不足の正常系）。
 
-- [ ] **Step 8: コミット**
+- [x] **Step 8: コミット**
 
 ```bash
 git add -A && git commit -m "feat: add guarded process kill with confirmation"
@@ -894,10 +902,30 @@ git add -A && git commit -m "feat: add guarded process kill with confirmation"
 
 ---
 
+## Task 6: 最終レビューで見つかった問題の修正（2026-10-18 / commit df9bcc3 のレビュー）
+
+外部レビュー（openai-codex/gpt-6.1-sol）で 9 件の指摘。すべて再現根拠を確認してから修正した。詳細は spec §5.2 / §7 / §8 と台帳を参照。
+
+| # | 深刻度 | 内容 | 修正 |
+|---|---|---|---|
+| 1 | High | Performance タブでも `x` が効くのにフッタが空で、確認プロンプトが見えないまま kill できた | `App::request_kill` の先頭で `if self.tab != Tab::Processes { return; }` |
+| 2 | High | `pump_keys` が 1 秒分まとめて入力処理し、`x`→`y` を 1 秒以内に押すと確認を一度も描画せず kill | `pump_keys` を 1 キー処理にし、ループ先頭で毎回 `draw`（サンプリング tick とは分離） |
+| 3 | Medium | ネットワークが `total_received/transmitted`（累積）をそのまま bps 表示 | `received()/transmitted()`（前回 refresh からの差分）の合計を `rate_per_sec` に通す |
+| 4 | Medium | `global_cpu_usage() / cpu_count` の二重正規化で全体 CPU が 1/16 の過小表示 | 全体はそのまま `clamp(0.0, 100.0)`（プロセスのみコア数で割る） |
+| 5 | Medium | `prev_at` を `sample()` 末尾で更新するため GPU 取得時間が分母から抜けて速度が過大 | `sample()` 先頭で `Instant::now()` を取り `prev_at` もそこで更新 |
+| 6 | Medium | 確認中に PID が再利用されると別プロセスを kill（Windows の kill は PID 指定の taskkill） | `ProcessRow::start_secs` + `Sampler::kill(pid, expected_start)` + `KillOutcome::Replaced` |
+| 7 | Low | フィルタ編集直後に `app.selected` が範囲外のままで、強調行と選択 PID がずれて `x` が no-op | Filter モードの末尾で `clamp_selection()` |
+| 8 | Low | `enable_raw_mode()` 成功後に初期化が失敗すると端末が復元されない | `TerminalGuard::restore()` を追加し失敗枝から呼ぶ |
+| 9 | Low | フッタが結果種別によらず LightYellow、フィルタ入力が DarkGray（spec と不一致） | `StatusKind`（Ok=Green / Warn=Yellow / Err=Red）と Filter=Cyan を実装 |
+
+検証（2026-10-18）: `cargo test` **34 passed**、`cargo clippy --all-targets -- -D warnings` **警告なし**。追加テスト: `filtering_clamps_selection_immediately` / `kill_request_is_ignored_outside_processes_tab` / `kill_result_footer_is_colored_by_kind`、`sampler_smoke` に「`cpu_total` が `global_cpu_usage().clamp(0,100)` と一致」を追加。
+
+---
+
 ## 完了条件
 
-1. `cargo test` が全て PASS する。
-2. `cargo clippy -- -D warnings` が警告なしで通る。
-3. `cargo run` でパフォーマンスタブとプロセスタブが動作し、`q` で終了後に端末が正常状態に戻る。
-4. spec の §2.1 の 3 項目（パフォーマンスグラフ / プロセス一覧 / kill）が手動確認できる。
+1. `cargo test` が全て PASS する。（34 passed を確認）
+2. `cargo clippy -- -D warnings` が警告なしで通る。（`--all-targets` で確認）
+3. `cargo run` でパフォーマンスタブとプロセスタブが動作し、`q` で終了後に端末が正常状態に戻る。（TTY が無く未検証）
+4. spec の §2.1 の 3 項目（パフォーマンスグラフ / プロセス一覧 / kill）が手動確認できる。（TTY が無く未検証）
 5. 実装しないもの（spec §2.2）を追加していない。

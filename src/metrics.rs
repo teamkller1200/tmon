@@ -60,6 +60,8 @@ pub struct ProcessRow {
     pub name: String,
     pub cpu: f32,
     pub memory: u64,
+    /// プロセス開始時刻（PID 再利用の検出に使う）。
+    pub start_secs: u64,
     pub disk_read_bps: u64,
     pub disk_write_bps: u64,
 }
@@ -70,6 +72,8 @@ pub enum KillOutcome {
     Killed,
     NotFound,
     Failed,
+    /// PID が再利用されて別のプロセスになっていた（kill せず中止）。
+    Replaced,
 }
 
 /// 1 秒ごとに sample() を呼び、差分からレートを出す計測器。
@@ -85,19 +89,24 @@ pub struct Sampler {
 impl Sampler {
     pub fn new() -> Self {
         let mut sys = System::new_all();
-        let disks = Disks::new_with_refreshed_list();
-        let networks = Networks::new_with_refreshed_list();
         // CPU 使用率は 2 回の refresh の差分なので、最初の値のために 1 回待つ。
         std::thread::sleep(sysinfo::MINIMUM_CPU_UPDATE_INTERVAL);
         sys.refresh_all();
 
+        // ディスク/ネットワークの基点は待機の後で取る（sleep 中の通信を初回レートに混ぜない）。
+        let disks = Disks::new_with_refreshed_list();
+        let networks = Networks::new_with_refreshed_list();
         let (prev_disk_read, prev_disk_write) = disk_totals(&disks);
 
         Self { sys, disks, networks, prev_at: Instant::now(), prev_disk_read, prev_disk_write }
     }
 
     pub fn sample(&mut self) -> Metrics {
-        let elapsed = self.prev_at.elapsed().as_secs_f64().max(0.0);
+        // 差分の分母は「前回の計測開始から今回の計測開始まで」。refresh の後（末尾）で取ると
+        // 途中の GPU 取得（nvidia-smi で数百 ms）が分母から抜けて速度が過大になる。
+        let now = Instant::now();
+        let elapsed = now.saturating_duration_since(self.prev_at).as_secs_f64();
+        self.prev_at = now;
 
         self.sys.refresh_cpu_all();
         self.sys.refresh_memory();
@@ -119,12 +128,14 @@ impl Sampler {
             if is_loopback_name(name) {
                 continue;
             }
-            rx += data.total_received();
-            tx += data.total_transmitted();
+            // received/transmitted は前回 refresh からの差分（total_* は累積なので速度に使えない）。
+            rx += data.received();
+            tx += data.transmitted();
         }
 
-        // global_cpu_usage() は全 CPU の加算値なので、コア数で割って 0..100 にする。
-        let cpu_total = (self.sys.global_cpu_usage() / cpu_count).clamp(0.0, 100.0);
+        // global_cpu_usage() は Windows では "100 - \Processor(_Total)\% Idle Time" で既に 0..100
+        // （sysinfo-0.39.6/src/windows/system.rs:143）。ここで割ると 16 コアで 1/16 の過小表示になる。
+        let cpu_total = self.sys.global_cpu_usage().clamp(0.0, 100.0);
 
         let processes = self
             .sys
@@ -138,13 +149,14 @@ impl Sampler {
                     // プロセスの CPU% も同じくコア数で割る（タスクマネージャーと同じ 0..100）。
                     cpu: (p.cpu_usage() / cpu_count).clamp(0.0, 100.0),
                     memory: p.memory(),
+                    start_secs: p.start_time(),
                     disk_read_bps: rate_per_sec(disk.read_bytes, elapsed),
                     disk_write_bps: rate_per_sec(disk.written_bytes, elapsed),
                 }
             })
             .collect();
 
-        let metrics = Metrics {
+        Metrics {
             cpu_total,
             per_core: self.sys.cpus().iter().map(|c| c.cpu_usage()).collect(),
             mem_used: self.sys.used_memory(),
@@ -153,23 +165,23 @@ impl Sampler {
             swap_total: self.sys.total_swap(),
             disk_read_bps,
             disk_write_bps,
-            net_rx_bps: rx,
-            net_tx_bps: tx,
+            net_rx_bps: rate_per_sec(rx, elapsed),
+            net_tx_bps: rate_per_sec(tx, elapsed),
             gpu: gpu::read_gpu_stats(),
             processes,
-        };
-
-        self.prev_at = Instant::now();
-        metrics
+        }
     }
 
     /// プロセスを終了する。見つからない場合だけ 1 回再取得してから判定する。
-    pub fn kill(&mut self, pid: u32) -> KillOutcome {
+    /// `expected_start` は確認プロンプトを出した時点の `Process::start_time()`。Windows の kill は
+    /// PID 指定の taskkill なので、PID が再利用されて別プロセスになっていたら中止する。
+    pub fn kill(&mut self, pid: u32, expected_start: u64) -> KillOutcome {
         let pid = Pid::from_u32(pid);
         if self.sys.process(pid).is_none() {
             self.sys.refresh_processes(ProcessesToUpdate::Some(&[pid]), true);
         }
         match self.sys.process(pid) {
+            Some(p) if p.start_time() != expected_start => KillOutcome::Replaced,
             Some(p) if p.kill() => KillOutcome::Killed,
             Some(_) => KillOutcome::Failed,
             None => KillOutcome::NotFound,
@@ -224,5 +236,8 @@ mod tests {
         assert!(m.mem_total > 0);
         assert!(!m.processes.is_empty());
         assert!(m.processes.iter().all(|p| p.cpu >= 0.0));
+        // global_cpu_usage() は Windows では既に 0..100。ここでコア数を割ると過小表示に戻る。
+        let raw = s.sys.global_cpu_usage().clamp(0.0, 100.0);
+        assert!((m.cpu_total - raw).abs() < f32::EPSILON, "cpu_total {} != raw {raw}", m.cpu_total);
     }
 }

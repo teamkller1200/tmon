@@ -66,12 +66,23 @@ pub enum Mode {
     ConfirmKill,
 }
 
+/// ステータス行の配色（spec §6.0 の kill 結果の色分け）。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum StatusKind {
+    #[default]
+    Info,
+    Ok,
+    Warn,
+    Err,
+}
+
 /// `on_key` が返す、UI 層に任せる操作。
 #[derive(Debug, PartialEq)]
 pub enum Action {
     None,
     Quit,
-    Kill(u32),
+    /// (PID, 確認プロンプトを出した時点のプロセス開始時刻)
+    Kill(u32, u64),
 }
 
 /// プロセス名の部分一致、または PID の前方一致（空フィルタは全件一致）。
@@ -123,8 +134,10 @@ pub struct App {
     pub filter: String,
     pub mode: Mode,
     pub status: Option<String>,
+    pub status_kind: StatusKind,
     pub pending_kill: Option<u32>,
     pub pending_name: Option<String>,
+    pub pending_start: Option<u64>,
 }
 
 impl Default for App {
@@ -146,8 +159,10 @@ impl Default for App {
             filter: String::new(),
             mode: Mode::Normal,
             status: None,
+            status_kind: StatusKind::Info,
             pending_kill: None,
             pending_name: None,
+            pending_start: None,
         }
     }
 }
@@ -172,7 +187,7 @@ impl App {
         self.metrics = metrics;
         self.frame_count += 1;
         // プロセスが消えると選択行が範囲外になるので寄せる。
-        self.selected = self.selected.min(self.visible().len().saturating_sub(1));
+        self.clamp_selection();
     }
 
     /// 押下キーを状態に反映し、UI 層に渡す操作を返す。KeyEventKind::Press 以外は無視する。
@@ -190,15 +205,20 @@ impl App {
                     KeyCode::Enter | KeyCode::Esc => self.mode = Mode::Normal,
                     _ => {}
                 }
+                // 絞り込みで行が減っても、選択行が表示とずれたまま残らないようその場で寄せる。
+                self.clamp_selection();
                 Action::None
             }
             Mode::ConfirmKill => {
                 // y 以外（q を含む）はすべてキャンセル扱い。
                 let pid = self.pending_kill.take();
+                let start = self.pending_start.take();
                 self.pending_name = None;
                 self.mode = Mode::Normal;
-                match (key.code, pid) {
-                    (KeyCode::Char('y') | KeyCode::Char('Y'), Some(pid)) => Action::Kill(pid),
+                match (key.code, pid, start) {
+                    (KeyCode::Char('y') | KeyCode::Char('Y'), Some(pid), Some(start)) => {
+                        Action::Kill(pid, start)
+                    }
                     _ => Action::None,
                 }
             }
@@ -253,28 +273,45 @@ impl App {
         }
     }
 
-    /// 選択行の kill を要求する。保護対象なら status に理由を出して確認を出さない。
+    /// 選択行が現在の一覧に収まるよう寄せる。
+    fn clamp_selection(&mut self) {
+        self.selected = self.selected.min(self.visible().len().saturating_sub(1));
+    }
+
+    /// 選択行の kill を要求する。Processes タブ以外と保護対象では確認を出さない
+    /// （Performance タブにはフッタが無く、確認プロンプトが見えないまま kill できてしまう）。
     pub fn request_kill(&mut self, own_pid: Option<u32>) {
-        let Some(pid) = self.selected_pid() else {
-            return;
-        };
-        let name = self.visible().get(self.selected).map(|r| r.name.clone()).unwrap_or_default();
-        if let Some(reason) = kill_blocked_reason(pid, own_pid) {
-            self.status = Some(reason.to_string());
+        if self.tab != Tab::Processes {
             return;
         }
-        self.pending_kill = Some(pid);
-        self.pending_name = Some(name);
+        let Some(row) = self.visible().get(self.selected).cloned() else {
+            return;
+        };
+        if let Some(reason) = kill_blocked_reason(row.pid, own_pid) {
+            self.status = Some(reason.to_string());
+            self.status_kind = StatusKind::Warn;
+            return;
+        }
+        self.pending_kill = Some(row.pid);
+        self.pending_name = Some(row.name);
+        self.pending_start = Some(row.start_secs);
         self.mode = Mode::ConfirmKill;
     }
 
     /// kill の結果をステータス行に反映する。
     pub fn set_kill_result(&mut self, pid: u32, outcome: KillOutcome) {
-        self.status = Some(match outcome {
-            KillOutcome::Killed => format!("killed PID {pid}"),
-            KillOutcome::NotFound => format!("PID {pid} not found"),
-            KillOutcome::Failed => format!("failed to kill PID {pid} (permission?)"),
-        });
+        let (text, kind) = match outcome {
+            KillOutcome::Killed => (format!("killed PID {pid}"), StatusKind::Ok),
+            KillOutcome::Replaced => {
+                (format!("PID {pid} is now another process; kill canceled"), StatusKind::Warn)
+            }
+            KillOutcome::NotFound => (format!("PID {pid} not found"), StatusKind::Warn),
+            KillOutcome::Failed => {
+                (format!("failed to kill PID {pid} (permission?)"), StatusKind::Err)
+            }
+        };
+        self.status = Some(text);
+        self.status_kind = kind;
     }
 
     /// フィルタとソートを適用した、表示順のプロセス行。
@@ -288,11 +325,6 @@ impl App {
             .collect();
         sort_rows(&mut rows, self.sort, self.desc);
         rows
-    }
-
-    /// 選択中の行の PID。表示中の行が無い（または範囲外）なら None。
-    pub fn selected_pid(&self) -> Option<u32> {
-        self.visible().get(self.selected).map(|p| p.pid)
     }
 
     /// タブを巡回させる（2 枚しかないので next と prev は同じ）。
@@ -340,7 +372,15 @@ mod tests {
     }
 
     fn row(pid: u32, name: &str, cpu: f32) -> ProcessRow {
-        ProcessRow { pid, name: name.to_string(), cpu, memory: 0, disk_read_bps: 0, disk_write_bps: 0 }
+        ProcessRow {
+            pid,
+            name: name.to_string(),
+            cpu,
+            memory: 0,
+            start_secs: 0,
+            disk_read_bps: 0,
+            disk_write_bps: 0,
+        }
     }
 
     fn key(code: KeyCode) -> KeyEvent {
@@ -385,7 +425,7 @@ mod tests {
         app.selected = 2;
         app.on_tick(Metrics { processes: vec![row(1, "a", 1.0)], ..Default::default() });
         assert_eq!(app.selected, 0);
-        assert_eq!(app.selected_pid(), Some(1));
+        assert_eq!(app.visible().first().map(|r| r.pid), Some(1));
     }
 
     #[test]
@@ -393,7 +433,6 @@ mod tests {
         let mut app = app_with_processes(&[("a", 1, 1.0)]);
         app.filter = "zzz".to_string();
         assert!(app.visible().is_empty());
-        assert_eq!(app.selected_pid(), None);
     }
 
     #[test]
@@ -441,7 +480,7 @@ mod tests {
         assert_eq!(app.pending_kill, None);
         assert_eq!(app.mode, Mode::Normal);
         app.request_kill(Some(999));
-        assert_eq!(app.on_key(key(KeyCode::Char('y'))), Action::Kill(1234));
+        assert_eq!(app.on_key(key(KeyCode::Char('y'))), Action::Kill(1234, 0));
         assert_eq!(app.mode, Mode::Normal);
         assert_eq!(app.pending_kill, None);
     }
@@ -464,6 +503,34 @@ mod tests {
         assert_eq!(app.status.as_deref(), Some("PID 1234 not found"));
         app.set_kill_result(1234, KillOutcome::Failed);
         assert_eq!(app.status.as_deref(), Some("failed to kill PID 1234 (permission?)"));
+        assert_eq!(app.status_kind, StatusKind::Err);
+        app.set_kill_result(1234, KillOutcome::Replaced);
+        assert_eq!(app.status.as_deref(), Some("PID 1234 is now another process; kill canceled"));
+        assert_eq!(app.status_kind, StatusKind::Warn);
+    }
+
+    #[test]
+    fn filtering_clamps_selection_immediately() {
+        let mut app = app_with_processes(&[("a", 1, 1.0), ("b", 2, 2.0), ("c", 3, 3.0)]);
+        app.selected = 2;
+        app.on_key(key(KeyCode::Char('/')));
+        app.on_key(key(KeyCode::Char('a')));
+        assert!(
+            app.selected < app.visible().len(),
+            "selected {} is out of {} rows",
+            app.selected,
+            app.visible().len()
+        );
+    }
+
+    #[test]
+    fn kill_request_is_ignored_outside_processes_tab() {
+        let mut app = app_with_processes(&[("notepad.exe", 1234, 1.0)]);
+        assert_eq!(app.tab, Tab::Performance);
+        app.on_key(key(KeyCode::Char('x')));
+        assert_eq!(app.mode, Mode::Normal);
+        assert_eq!(app.pending_kill, None);
+        assert_eq!(app.pending_start, None);
     }
 
     #[test]
