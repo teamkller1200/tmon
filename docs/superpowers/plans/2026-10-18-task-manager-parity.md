@@ -56,7 +56,7 @@ spec の §10.1 より。いずれもテストが無いと壊れる入力なの�
 `git log` は `fatal: not a git repository` を返す（このプロジェクトは未管理）。タスク単位のコミットを取るため、まず初期化する。
 
 ```bash
-cd C:/Users/syu12/programming/tui-gpumonitor
+cd C:/Users/syu12/programming/tmon
 printf '/target\n' > .gitignore
 git init
 git add -A
@@ -238,7 +238,7 @@ git add -A && git commit -m "refactor: split main.rs into modules and guard term
 - [x] **Step 1: sysinfo を追加してビルドする**
 
 ```bash
-cd C:/Users/syu12/programming/tui-gpumonitor
+cd C:/Users/syu12/programming/tmon
 cargo add sysinfo@0.39
 cargo build
 ```

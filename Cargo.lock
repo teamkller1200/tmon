@@ -543,8 +543,8 @@ dependencies = [
 ]
 
 [[package]]
-name = "tui-gpumonitor"
-version = "0.1.0"
+name = "tmon"
+version = "0.1.1"
 dependencies = [
  "crossterm",
  "ratatui",

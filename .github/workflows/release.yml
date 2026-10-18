@@ -15,6 +15,6 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - run: cargo test
       - run: cargo build --release
-      - run: gh release create "${{ github.ref_name }}" target/release/tui-gpumonitor.exe --title "${{ github.ref_name }}" --generate-notes
+      - run: gh release create "${{ github.ref_name }}" target/release/tmon.exe --title "${{ github.ref_name }}" --generate-notes
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

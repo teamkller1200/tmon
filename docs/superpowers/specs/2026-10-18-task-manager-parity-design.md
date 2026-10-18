@@ -1,7 +1,7 @@
 # Windows タスクマネージャー相当機能 設計書
 
 - 日付: 2026-10-18
-- 対象: C:\Users\syu12\programming\tui-gpumonitor (Rust/TUI, ratatui + crossterm)
+- 対象: C:\Users\syu12\programming\tmon (Rust/TUI, ratatui + crossterm)
 - 実装計画: docs/superpowers/plans/2026-10-18-task-manager-parity.md
 - 状態: ユーザーレビュー待ち（実装前）
 

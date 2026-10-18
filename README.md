@@ -1,4 +1,4 @@
-# tui-gpumonitor
+# tmon
 
 Rust + ratatui 製のターミナル・システムモニタ。Windows タスクマネージャー相当の「パフォーマンス」タブと「プロセス」タブを、端末の中だけで提供します。
 
@@ -40,7 +40,7 @@ Rust 1.95 以降（edition 2024）が必要です。
 
 ```sh
 cargo build --release
-target\release\tui-gpumonitor.exe
+target\release\tmon.exe
 ```
 
 ## 動作環境と制限
